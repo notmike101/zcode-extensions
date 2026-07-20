@@ -1,0 +1,281 @@
+import {render} from "preact";
+import {useEffect, useMemo, useRef, useState} from "preact/hooks";
+import type {HostState, PluginStatus} from "../shared/schemas.ts";
+import type {RendererPlugin, ZdpBridge} from "./globals.d.ts";
+import styles from "./styles.css";
+
+const bridge = window.zcodeDesktopPlugins;
+if (!bridge) throw new Error("ZCode Desktop Extensions preload bridge is unavailable");
+
+const modules = window.__zdpRendererPlugins ?? new Map<string, RendererPlugin>();
+window.__zdpRendererPlugins = modules;
+window.ZDP_REGISTER_PLUGIN_RENDERER = (plugin) => {
+  modules.set(plugin.id, plugin);
+  window.dispatchEvent(new CustomEvent("zdp-renderer-registered", {detail: plugin.id}));
+};
+
+let host = document.getElementById("zdp-host");
+if (!host) {
+  host = document.createElement("div");
+  host.id = "zdp-host";
+  document.documentElement.append(host);
+}
+const shadow = host.shadowRoot ?? host.attachShadow({mode: "open"});
+const style = document.createElement("style");
+style.textContent = styles;
+const mount = document.createElement("div");
+shadow.replaceChildren(style, mount);
+render(<DesktopPluginsApp bridge={bridge}/>, mount);
+
+function DesktopPluginsApp({bridge}: {bridge: ZdpBridge}) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<HostState | null>(null);
+  const [activePage, setActivePage] = useState("plugins");
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState<string>();
+  const [rendererRevision, setRendererRevision] = useState(0);
+
+  const refresh = async () => {
+    try {
+      const next = await bridge.invoke<HostState>("host:getState");
+      window.__zdpHostState = next;
+      setState(next);
+      loadRendererScripts(next.plugins);
+      setError(undefined);
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    const remove = bridge.on((event) => {
+      if (event === "host-state-changed") void refresh();
+      if (event.startsWith("plugin:")) window.dispatchEvent(new CustomEvent(event));
+    });
+    const registered = () => setRendererRevision((value) => value + 1);
+    window.addEventListener("zdp-renderer-registered", registered);
+    return () => {
+      remove();
+      window.removeEventListener("zdp-renderer-registered", registered);
+    };
+  }, []);
+
+  useEffect(() => installNativeNavigationItem(() => setOpen(true)), []);
+
+  const pages = useMemo(() => state?.plugins.flatMap((plugin) => plugin.enabled
+    ? plugin.manifest.pages.map((page) => ({...page, pluginId: plugin.manifest.id}))
+    : []) ?? [], [state, rendererRevision]);
+
+  const run = async (key: string, action: () => Promise<unknown>) => {
+    setBusy(key);
+    setError(undefined);
+    try { await action(); await refresh(); } catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(undefined); }
+  };
+
+  return <>
+    {open && <div class="zdp-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
+      <section class="zdp-shell" role="dialog" aria-label="ZCode Desktop Extensions">
+        <header class="zdp-header">
+          <div><h1>ZCode Desktop Extensions</h1><p>{state ? `Host ${state.version} · ZCode ${state.zcodeVersion}` : "Loading…"}</p></div>
+          <button class="zdp-icon-button" onClick={() => setOpen(false)} aria-label="Close">×</button>
+        </header>
+        <div class="zdp-body">
+          <nav class="zdp-nav">
+            <button class={activePage === "plugins" ? "active" : ""} onClick={() => setActivePage("plugins")}>Installed</button>
+            <button class={activePage === "health" ? "active" : ""} onClick={() => setActivePage("health")}>Health</button>
+            {pages.map((page) => <button class={activePage === `${page.pluginId}:${page.id}` ? "active" : ""}
+              onClick={() => setActivePage(`${page.pluginId}:${page.id}`)}>{page.title}</button>)}
+          </nav>
+          <main class="zdp-content">
+            {error && <div class="zdp-alert"><strong>Action failed</strong><span>{error}</span></div>}
+            {activePage === "plugins" && <PluginList state={state} busy={busy} run={run} bridge={bridge}/>} 
+            {activePage === "health" && <HealthPage state={state} bridge={bridge}/>} 
+            {activePage.includes(":") && <PluginPage key={`${activePage}:${rendererRevision}`} page={activePage} bridge={bridge}/>} 
+          </main>
+        </div>
+      </section>
+    </div>}
+  </>;
+}
+
+function installNativeNavigationItem(open: () => void): () => void {
+  let navigationItem: HTMLButtonElement | undefined;
+  let scheduledFrame: number | undefined;
+
+  const ensureNavigationItem = () => {
+    const skillsButton = findSkillsNavigationButton();
+    if (!skillsButton) return;
+
+    const existing = document.querySelector<HTMLButtonElement>("button[data-zdp-navigation-item]");
+    if (existing) {
+      navigationItem = existing;
+      if (skillsButton.nextElementSibling !== existing) skillsButton.insertAdjacentElement("afterend", existing);
+      return;
+    }
+
+    const item = skillsButton.cloneNode(false) as HTMLButtonElement;
+    item.setAttribute("data-zdp-navigation-item", "true");
+    item.setAttribute("aria-label", "ZCode Desktop Extensions");
+    item.removeAttribute("data-testid");
+    item.removeAttribute("disabled");
+    item.type = "button";
+    item.title = "ZCode Desktop Extensions";
+    item.replaceChildren(createPluginNavigationIcon(), document.createTextNode("Extensions"));
+    item.addEventListener("click", open);
+    skillsButton.insertAdjacentElement("afterend", item);
+    navigationItem = item;
+  };
+
+  const scheduleNavigationSync = () => {
+    if (scheduledFrame !== undefined) return;
+    scheduledFrame = window.requestAnimationFrame(() => {
+      scheduledFrame = undefined;
+      ensureNavigationItem();
+    });
+  };
+
+  ensureNavigationItem();
+  const observer = new MutationObserver(scheduleNavigationSync);
+  observer.observe(document.getElementById("root") ?? document.body, {childList: true, subtree: true});
+
+  return () => {
+    observer.disconnect();
+    if (scheduledFrame !== undefined) window.cancelAnimationFrame(scheduledFrame);
+    navigationItem?.removeEventListener("click", open);
+    navigationItem?.remove();
+  };
+}
+
+function findSkillsNavigationButton(): HTMLButtonElement | undefined {
+  const sidebars = [...document.querySelectorAll("aside")];
+  for (const sidebar of sidebars) {
+    const named = [...sidebar.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.getAttribute("data-zdp-navigation-item") === null && button.textContent?.trim().toLocaleLowerCase() === "skills",
+    );
+    if (named) return named;
+  }
+
+  for (const sidebar of sidebars) {
+    const navigationGroups = [...sidebar.querySelectorAll<HTMLDivElement>("div")].filter((group) =>
+      group.classList.contains("flex-col") && group.classList.contains("gap-1") && group.classList.contains("px-2"),
+    );
+    for (const group of navigationGroups) {
+      const buttons = [...group.children].filter((child): child is HTMLButtonElement =>
+        child instanceof HTMLButtonElement && child.getAttribute("data-zdp-navigation-item") === null,
+      );
+      if (buttons.length >= 2) return buttons.at(-1);
+    }
+  }
+  return undefined;
+}
+
+function createPluginNavigationIcon(): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [name, value] of Object.entries({
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": "2",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    class: "size-4",
+    "aria-hidden": "true",
+  })) svg.setAttribute(name, value);
+  for (const pathData of ["M12 22v-5", "M9 8V2", "M15 8V2", "M18 8v5a6 6 0 0 1-12 0V8Z"]) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", pathData);
+    svg.append(path);
+  }
+  return svg;
+}
+
+function PluginList({state, busy, run, bridge}: {
+  state: HostState | null;
+  busy?: string;
+  run: (key: string, action: () => Promise<unknown>) => Promise<void>;
+  bridge: ZdpBridge;
+}) {
+  const install = async () => {
+    const folder = await bridge.invoke<string | null>("host:choosePluginFolder");
+    if (!folder) return;
+    if (!window.confirm("Desktop extensions are trusted local code and can access your files. Install this folder?")) return;
+    await bridge.invoke("plugin:install", {path: folder});
+  };
+  return <div>
+    <div class="zdp-section-title"><div><h2>Installed extensions</h2><p>Extensions run separately from ZCode's skills, commands, hooks, and MCP integrations.</p></div>
+      <button class="zdp-primary" disabled={Boolean(busy)} onClick={() => run("install", install)}>Install extension</button></div>
+    <div class="zdp-cards">
+      {state?.plugins.map((plugin) => <PluginCard plugin={plugin} busy={busy} run={run} bridge={bridge}/>)}
+      {state && state.plugins.length === 0 && <div class="zdp-empty">No extensions installed.</div>}
+    </div>
+  </div>;
+}
+
+function PluginCard({plugin, busy, run, bridge}: {
+  plugin: PluginStatus;
+  busy?: string;
+  run: (key: string, action: () => Promise<unknown>) => Promise<void>;
+  bridge: ZdpBridge;
+}) {
+  const key = plugin.manifest.id;
+  return <article class="zdp-card">
+    <div class="zdp-card-head"><div><h3>{plugin.manifest.name}</h3><p>{plugin.manifest.description ?? plugin.manifest.id}</p></div>
+      <span class={`zdp-status ${plugin.error ? "error" : plugin.loaded ? "ready" : "idle"}`}>{plugin.error ? "Error" : plugin.loaded ? "Loaded" : "Stopped"}</span></div>
+    {plugin.error && <pre class="zdp-error-text">{plugin.error}</pre>}
+    <div class="zdp-meta"><span>{plugin.manifest.version}</span><span>{plugin.manifest.id}</span></div>
+    <div class="zdp-actions">
+      <button disabled={Boolean(busy)} onClick={() => run(`${key}:toggle`, () => bridge.invoke("plugin:setEnabled", {pluginId: key, enabled: !plugin.enabled}))}>{plugin.enabled ? "Disable" : "Enable"}</button>
+      <button disabled={Boolean(busy) || !plugin.enabled} onClick={() => run(`${key}:reload`, () => bridge.invoke("plugin:reload", {pluginId: key}))}>Reload</button>
+      <button class="danger" disabled={Boolean(busy)} onClick={() => {
+        if (window.confirm(`Uninstall ${plugin.manifest.name}? The bundle will be moved to recoverable trash.`)) {
+          void run(`${key}:uninstall`, () => bridge.invoke("plugin:uninstall", {pluginId: key}));
+        }
+      }}>Uninstall</button>
+    </div>
+  </article>;
+}
+
+function HealthPage({state, bridge}: {state: HostState | null; bridge: ZdpBridge}) {
+  const [logs, setLogs] = useState<string[]>([]);
+  useEffect(() => { void bridge.invoke<string[]>("host:getLogs").then(setLogs); }, []);
+  return <div><div class="zdp-section-title"><div><h2>Host health</h2><p>Loader, protocol, and local runtime status.</p></div></div>
+    <dl class="zdp-health">
+      <dt>Extension host</dt><dd>{state ? "Ready" : "Loading"}</dd>
+      <dt>ZCode task protocol</dt><dd>{state?.health.protocol ?? "unknown"}{state?.health.protocolError ? ` — ${state.health.protocolError}` : ""}</dd>
+      <dt>Root</dt><dd>{state?.root}</dd><dt>Data</dt><dd>{state?.dataDir}</dd>
+    </dl>
+    <h3 class="zdp-log-title">Recent host log</h3><pre class="zdp-log">{logs.length ? logs.join("\n") : "No log entries yet."}</pre>
+  </div>;
+}
+
+function PluginPage({page, bridge}: {page: string; bridge: ZdpBridge}) {
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const [pluginId] = page.split(":");
+    const plugin = modules.get(pluginId);
+    if (!plugin || !container.current) return;
+    const cleanup = plugin.mount(container.current, bridge);
+    return typeof cleanup === "function" ? cleanup : undefined;
+  }, [page]);
+  const [pluginId] = page.split(":");
+  return <div ref={container}>{!modules.has(pluginId) && <div class="zdp-empty">Loading extension page…</div>}</div>;
+}
+
+const loadedRendererUrls = new Set<string>();
+function loadRendererScripts(plugins: PluginStatus[]): void {
+  for (const plugin of plugins) {
+    if (!plugin.rendererUrl || loadedRendererUrls.has(plugin.rendererUrl)) continue;
+    loadedRendererUrls.add(plugin.rendererUrl);
+    const script = document.createElement("script");
+    script.src = plugin.rendererUrl;
+    script.async = true;
+    script.addEventListener("error", () => loadedRendererUrls.delete(plugin.rendererUrl!));
+    document.head.append(script);
+  }
+}
+
+function errorText(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
+}

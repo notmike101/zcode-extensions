@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish Windows release
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Reject tracked generated or private files
+        shell: pwsh
+        run: |
+          $tracked = @(git ls-files -- '*.exe' 'bin/**' 'runtime/**' 'data/**')
+          if ($tracked.Count -gt 0) {
+            $tracked | ForEach-Object { Write-Error "Generated or private path is tracked: $_" }
+            exit 1
+          }
+
+      - name: Verify tag and project versions
+        shell: pwsh
+        run: bun scripts/package-release.ts --verify-only --tag "$env:GITHUB_REF_NAME"
+
+      - name: Typecheck, test, and build
+        run: bun run check
+
+      - name: Package portable release
+        shell: pwsh
+        run: bun scripts/package-release.ts --tag "$env:GITHUB_REF_NAME"
+
+      - name: Publish immutable GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release $env:GITHUB_REF_NAME already exists; refusing to overwrite it."
+          }
+
+          $assets = @(Get-ChildItem "dist/release" -File | Where-Object {
+            $_.Name -like "*.zip" -or $_.Name -like "*.zip.sha256"
+          })
+          if ($assets.Count -ne 2) {
+            throw "Expected exactly one ZIP and one SHA-256 asset; found $($assets.Count)."
+          }
+
+          $assetPaths = @($assets | ForEach-Object { $_.FullName })
+          gh release create "$env:GITHUB_REF_NAME" $assetPaths `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --verify-tag `
+            --generate-notes `
+            --title "ZCode Desktop Extensions $env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

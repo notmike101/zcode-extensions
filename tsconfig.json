@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "types": ["bun", "node"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "sdk/**/*.ts", "plugins/**/*.ts", "plugins/**/*.tsx", "examples/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+}

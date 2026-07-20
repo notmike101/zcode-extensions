@@ -1,0 +1,21 @@
+{
+  "apiVersion": 1,
+  "id": "hello-extension",
+  "name": "Hello Extension",
+  "version": "0.1.0",
+  "description": "A minimal typed extension demonstrating lifecycle, persistence, IPC, events, and a renderer page.",
+  "entrypoints": {
+    "main": "dist/main.cjs",
+    "renderer": "dist/renderer.js"
+  },
+  "engines": {
+    "host": ">=0.1.2 <1",
+    "zcode": ">=3.3.6"
+  },
+  "pages": [
+    {
+      "id": "hello",
+      "title": "Hello"
+    }
+  ]
+}

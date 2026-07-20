@@ -1,0 +1,38 @@
+{
+  "name": "zcode-desktop-extensions",
+  "version": "0.1.2",
+  "description": "An update-resistant extension host for the ZCode Electron desktop application.",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/notmike101/zcode-extensions.git"
+  },
+  "homepage": "https://github.com/notmike101/zcode-extensions#readme",
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "build:example": "bun examples/hello-extension/build.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "check": "bun run typecheck && bun test && bun run build:example && bun run build",
+    "release:package": "bun scripts/package-release.ts",
+    "zdp": "bun src/cli/index.ts"
+  },
+  "dependencies": {
+    "@electron/asar": "^4.0.1",
+    "@electron/fuses": "^2.1.2",
+    "croner": "^10.0.1",
+    "preact": "^10.27.2",
+    "semver": "^7.7.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.4",
+    "@types/node": "^24.10.1",
+    "@types/semver": "^7.7.1",
+    "electron": "41.0.3",
+    "typescript": "^5.9.3"
+  }
+}

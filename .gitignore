@@ -1,0 +1,9 @@
+node_modules/
+.codegraph/
+dist/
+bin/
+runtime/
+data/
+coverage/
+*.log
+*.tsbuildinfo
