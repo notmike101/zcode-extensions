@@ -1,5 +1,14 @@
 export const RELEASE_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
+export function resolveReleaseTag(
+  explicitTag: string | undefined,
+  refType: string | undefined,
+  refName: string | undefined,
+  version: string,
+): string {
+  return explicitTag ?? (refType === "tag" ? refName : undefined) ?? `v${version}`;
+}
+
 export function assertReleaseVersion(tag: string, packageVersion: string, hostVersion: string): string {
   const match = RELEASE_TAG_PATTERN.exec(tag);
   if (!match) throw new Error(`Release tag must use strict vX.Y.Z syntax: ${tag}`);

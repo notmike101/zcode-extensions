@@ -4,13 +4,18 @@ import {copyFile, mkdir, readFile, readdir, rm, stat, writeFile} from "node:fs/p
 import path from "node:path";
 import {HOST_VERSION} from "../src/shared/constants.ts";
 import {pluginManifestSchema} from "../src/shared/schemas.ts";
-import {assertReleaseVersion, releaseBaseName} from "./release-helpers.ts";
+import {assertReleaseVersion, releaseBaseName, resolveReleaseTag} from "./release-helpers.ts";
 
 const root = path.resolve(import.meta.dir, "..");
 const args = process.argv.slice(2);
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as {version?: unknown};
 if (typeof packageJson.version !== "string") throw new Error("package.json has no version");
-const tag = valueAfter("--tag") ?? process.env.GITHUB_REF_NAME ?? `v${packageJson.version}`;
+const tag = resolveReleaseTag(
+  valueAfter("--tag"),
+  process.env.GITHUB_REF_TYPE,
+  process.env.GITHUB_REF_NAME,
+  packageJson.version,
+);
 const version = assertReleaseVersion(tag, packageJson.version, HOST_VERSION);
 
 if (args.includes("--verify-only")) {

@@ -1,14 +1,16 @@
 import {createRequire} from "node:module";
-import {cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat} from "node:fs/promises";
+import {cp, mkdir, readFile, readdir, realpath, rename, rm, stat} from "node:fs/promises";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
 import semver from "semver";
 import type {ExtensionContext, ExtensionDisposable, ExtensionModule} from "../../sdk/index.ts";
 import {HOST_VERSION, getPaths, PLUGIN_ID_PATTERN} from "../shared/constants.ts";
 import {writeJsonAtomic} from "../shared/atomic.ts";
-import {pluginManifestSchema, type PluginManifest, type PluginStatus} from "../shared/schemas.ts";
+import {type PluginManifest, type PluginStatus} from "../shared/schemas.ts";
 import type {JsonLogger} from "../shared/logger.ts";
 import type {TaskService} from "../protocol/task-service.ts";
+import {containedExtensionPath, readExtensionManifest, rejectExtensionLinks} from "./extension-bundle.ts";
+import {ExtensionUpdater, type AppliedUpdate} from "./extension-updater.ts";
 
 type PluginModule = ExtensionModule;
 type Disposable = ExtensionDisposable;
@@ -40,11 +42,19 @@ export class PluginManager {
   readonly #paths;
   readonly #records = new Map<string, PluginRecord>();
   readonly #ipcHandlers = new Map<string, (payload: unknown) => unknown | Promise<unknown>>();
+  readonly #updater: ExtensionUpdater;
   #enabledState: Record<string, boolean> = {};
 
   constructor(options: PluginManagerOptions) {
     this.#options = options;
     this.#paths = getPaths(options.root);
+    this.#updater = new ExtensionUpdater({
+      root: options.root,
+      zcodeVersion: options.zcodeVersion,
+      logger: options.logger.child("extension-updater"),
+      getInstalled: () => [...this.#records.values()].map((record) => ({root: record.root, manifest: record.manifest})),
+      onStateChanged: () => this.#stateChanged(),
+    });
   }
 
   async initialize(): Promise<void> {
@@ -55,11 +65,15 @@ export class PluginManager {
       mkdir(path.join(this.#paths.data, "plugin-data"), {recursive: true}),
     ]);
     await this.#restoreBuiltins();
+    const appliedUpdates = await this.#updater.initialize();
     await this.#loadEnabledState();
     await this.#scan();
     for (const record of this.#records.values()) {
       if (record.enabled) await this.#activate(record);
+      const applied = appliedUpdates.get(record.manifest.id);
+      if (applied) await this.#finalizeAppliedUpdate(record, applied);
     }
+    this.#updater.startAutomaticChecks();
   }
 
   list(): PluginStatus[] {
@@ -72,19 +86,46 @@ export class PluginManager {
         ? {rendererUrl: `zdp://plugin/${encodeURIComponent(record.manifest.id)}/renderer.js?generation=${record.generation}`}
         : {}),
       generation: record.generation,
+      update: this.#updater.status(record.manifest),
     })).sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
+  }
+
+  catalog() {
+    return this.#updater.catalog();
+  }
+
+  async checkUpdates(): Promise<void> {
+    await this.#updater.checkForUpdates();
+  }
+
+  async queueUpdate(pluginId: string): Promise<void> {
+    this.#require(pluginId);
+    await this.#updater.queueUpdate(pluginId);
+  }
+
+  async cancelQueuedUpdate(pluginId: string): Promise<void> {
+    await this.#updater.cancelPending(pluginId);
+  }
+
+  async installCatalog(pluginId: string): Promise<PluginStatus> {
+    const prepared = await this.#updater.prepareCatalogInstall(pluginId);
+    try {
+      return await this.install(prepared.root);
+    } finally {
+      await this.#updater.cleanupPrepared(prepared);
+    }
   }
 
   async install(sourceDirectory: string): Promise<PluginStatus> {
     const sourceRoot = await realpath(sourceDirectory);
-    await rejectLinks(sourceRoot);
-    const manifest = await readManifest(sourceRoot);
+    await rejectExtensionLinks(sourceRoot);
+    const manifest = await readExtensionManifest(sourceRoot);
     this.#checkCompatibility(manifest);
     if (this.#records.has(manifest.id)) throw new Error(`Extension is already installed: ${manifest.id}`);
     const staging = path.join(this.#paths.staging, `${manifest.id}-${randomUUID()}`);
     const destination = path.join(this.#paths.plugins, manifest.id);
     await cp(sourceRoot, staging, {recursive: true, force: false, errorOnExist: true, dereference: false});
-    await readManifest(staging);
+    await readExtensionManifest(staging);
     await rename(staging, destination).catch(async (error) => {
       await rm(staging, {recursive: true, force: true});
       throw error;
@@ -125,6 +166,7 @@ export class PluginManager {
 
   async uninstall(pluginId: string): Promise<void> {
     const record = this.#require(pluginId);
+    await this.#updater.cancelPending(pluginId);
     await this.#deactivate(record);
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const destination = path.join(this.#paths.trash, `${pluginId}-${timestamp}`);
@@ -147,10 +189,11 @@ export class PluginManager {
   rendererPath(pluginId: string): string {
     const record = this.#require(pluginId);
     if (!record.enabled || !record.manifest.entrypoints.renderer) throw new Error("Renderer entrypoint is unavailable");
-    return containedPath(record.root, record.manifest.entrypoints.renderer);
+    return containedExtensionPath(record.root, record.manifest.entrypoints.renderer);
   }
 
   async deactivateAll(): Promise<void> {
+    this.#updater.dispose();
     for (const record of [...this.#records.values()].reverse()) await this.#deactivate(record);
   }
 
@@ -160,7 +203,7 @@ export class PluginManager {
       if (!entry.isDirectory()) continue;
       const root = path.join(this.#paths.plugins, entry.name);
       try {
-        const manifest = await readManifest(root);
+        const manifest = await readExtensionManifest(root);
         this.#checkCompatibility(manifest);
         this.#records.set(manifest.id, {
           root,
@@ -178,7 +221,7 @@ export class PluginManager {
   async #activate(record: PluginRecord): Promise<void> {
     record.error = undefined;
     if (!record.manifest.entrypoints.main) return;
-    const entrypoint = containedPath(record.root, record.manifest.entrypoints.main);
+    const entrypoint = containedExtensionPath(record.root, record.manifest.entrypoints.main);
     try {
       clearRequireCache(record.root);
       const required = createRequire(import.meta.url)(entrypoint) as PluginModule | {default?: PluginModule};
@@ -205,7 +248,10 @@ export class PluginManager {
         lifecycle: {onResume: (handler) => this.#options.onResume(handler)},
         zcode: {
           readWorkspaceState: (workspacePath) => this.#options.taskService.readWorkspaceState(workspacePath),
-          tasks: {run: (spec) => this.#options.taskService.run(spec)},
+          tasks: {
+            run: (spec) => this.#options.taskService.run(spec),
+            ensureVisible: (spec) => this.#options.taskService.ensureVisible(spec),
+          },
         },
       };
       await mkdir(context.dataDir, {recursive: true});
@@ -233,6 +279,35 @@ export class PluginManager {
     clearRequireCache(record.root);
   }
 
+  async #finalizeAppliedUpdate(record: PluginRecord, applied: AppliedUpdate): Promise<void> {
+    if (!record.enabled || !record.error) {
+      await this.#updater.commitApplied(record.manifest.id);
+      await this.#options.logger.info("Extension update applied", {
+        pluginId: record.manifest.id,
+        version: record.manifest.version,
+      });
+      return;
+    }
+
+    await this.#options.logger.warn("Rolling back extension update after activation failure", {
+      pluginId: record.manifest.id,
+      version: applied.version,
+      error: record.error,
+    });
+    await this.#deactivate(record);
+    await this.#updater.rollbackApplied(record.manifest.id);
+    const manifest = await readExtensionManifest(record.root);
+    const restored: PluginRecord = {
+      root: record.root,
+      manifest,
+      enabled: record.enabled,
+      generation: record.generation + 1,
+      disposables: [],
+    };
+    this.#records.set(manifest.id, restored);
+    await this.#activate(restored);
+  }
+
   async #restoreBuiltins(): Promise<void> {
     const source = path.join(this.#options.runtimeVersionDir, "builtin-plugins");
     const entries = await readdir(source, {withFileTypes: true}).catch(() => []);
@@ -242,8 +317,8 @@ export class PluginManager {
       const bundledRoot = path.join(source, entry.name);
       if (await stat(destination).then(() => true).catch(() => false)) {
         try {
-          const bundled = await readManifest(bundledRoot);
-          const installed = await readManifest(destination);
+          const bundled = await readExtensionManifest(bundledRoot);
+          const installed = await readExtensionManifest(destination);
           if (!semver.gt(bundled.version, installed.version)) continue;
           const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
           await rename(destination, path.join(this.#paths.trash, `${entry.name}-${installed.version}-${timestamp}`));
@@ -287,40 +362,6 @@ export class PluginManager {
   #stateChanged(): void {
     this.#options.emit("host-state-changed", undefined);
   }
-}
-
-async function readManifest(root: string): Promise<PluginManifest> {
-  const manifestPath = path.join(root, ".zdp", "plugin.json");
-  const manifest = pluginManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
-  for (const entrypoint of [manifest.entrypoints.main, manifest.entrypoints.renderer]) {
-    if (!entrypoint) continue;
-    const target = containedPath(root, entrypoint);
-    const info = await stat(target);
-    if (!info.isFile()) throw new Error(`Extension entrypoint is not a file: ${entrypoint}`);
-  }
-  return manifest;
-}
-
-function containedPath(root: string, relativePath: string): string {
-  const resolvedRoot = path.resolve(root);
-  const target = path.resolve(resolvedRoot, relativePath);
-  const relative = path.relative(resolvedRoot, target);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    if (target !== resolvedRoot) throw new Error(`Path escapes extension root: ${relativePath}`);
-  }
-  return target;
-}
-
-async function rejectLinks(root: string): Promise<void> {
-  const walk = async (directory: string): Promise<void> => {
-    for (const entry of await readdir(directory, {withFileTypes: true})) {
-      const target = path.join(directory, entry.name);
-      const info = await lstat(target);
-      if (info.isSymbolicLink()) throw new Error(`Extension bundles cannot contain links: ${path.relative(root, target)}`);
-      if (entry.isDirectory()) await walk(target);
-    }
-  };
-  await walk(root);
 }
 
 function clearRequireCache(root: string): void {

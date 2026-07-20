@@ -13,11 +13,14 @@ button, input, textarea, select { font: inherit; }
 .zdp-nav button:hover { background: #272b34; color: #fff; }.zdp-nav button.active { background: #30364b; color: #dce3ff; }
 .zdp-content { padding: 24px; overflow: auto; }
 .zdp-section-title { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 18px; }.zdp-section-title h2 { font-size: 17px; }
+.zdp-section-actions { display: flex; gap: 8px; }
 .zdp-primary, .zdp-actions button, .zdp-content button { border: 1px solid #404654; border-radius: 7px; padding: 7px 11px; background: #292d36; color: #e0e4eb; cursor: pointer; }
 .zdp-primary { border-color: #6177e8 !important; background: #5368d8 !important; color: white !important; }.zdp-content button:hover { filter: brightness(1.12); }.zdp-content button:disabled { cursor: not-allowed; opacity: .45; }
 .zdp-cards { display: grid; gap: 12px; }.zdp-card { border: 1px solid #343943; border-radius: 10px; padding: 15px; background: #1d2027; }.zdp-card-head { display: flex; justify-content: space-between; gap: 20px; }.zdp-card h3 { font-size: 14px; }.zdp-card p { max-width: 600px; }
 .zdp-status { height: 22px; padding: 4px 8px; border-radius: 999px; font-size: 10px; background: #363b45; }.zdp-status.ready { color: #91e6b0; background: #183c2a; }.zdp-status.error { color: #ffaaa5; background: #462525; }
+.zdp-status.update { color: #cdd6ff; background: #303b74; }
 .zdp-meta { display: flex; gap: 12px; color: #757d8c; font: 11px/1.4 ui-monospace,monospace; margin-top: 13px; }.zdp-actions { display: flex; gap: 8px; margin-top: 13px; }.zdp-actions .danger { margin-left: auto; color: #ffaaa5; }
+.zdp-update-note { margin-top: 12px; padding: 9px 10px; border: 1px solid #3c4b83; border-radius: 7px; background: #242b49; color: #cdd6ff; font-size: 11px; }.zdp-update-note.warning { border-color: #6a5935; background: #3a3221; color: #f2d797; }
 .zdp-alert { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; padding: 11px 13px; border: 1px solid #704143; border-radius: 8px; color: #ffc3bf; background: #3c2427; font-size: 12px; }
 .zdp-error-text { color: #ffb3ae; white-space: pre-wrap; font-size: 11px; }.zdp-empty { padding: 28px; text-align: center; color: #8f96a2; border: 1px dashed #3b404a; border-radius: 10px; }
 .zdp-health { display: grid; grid-template-columns: 170px minmax(0,1fr); border: 1px solid #343943; border-radius: 10px; overflow: hidden; }.zdp-health dt,.zdp-health dd { margin: 0; padding: 11px 13px; border-bottom: 1px solid #30343d; font-size: 12px; }.zdp-health dt { color: #8f96a2; background: #1b1e24; }.zdp-health dd { overflow-wrap: anywhere; background: #20232a; }

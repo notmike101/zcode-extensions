@@ -15,8 +15,6 @@ await Promise.all([
 await Promise.all([
   mkdir(path.join(versionDir, "host"), {recursive: true}),
   mkdir(path.join(versionDir, "renderer"), {recursive: true}),
-  mkdir(path.join(versionDir, "builtin-plugins", "scheduler", "dist"), {recursive: true}),
-  mkdir(path.join(versionDir, "builtin-plugins", "scheduler", ".zdp"), {recursive: true}),
   mkdir(bin, {recursive: true}),
 ]);
 
@@ -44,24 +42,6 @@ await build({
   naming: "[name].js",
   loader: {".css": "text"},
 });
-await build({
-  entrypoints: [path.join(root, "plugins", "scheduler", "src", "main.ts")],
-  outdir: path.join(versionDir, "builtin-plugins", "scheduler", "dist"),
-  target: "node",
-  format: "cjs",
-  naming: "[name].cjs",
-  external: ["electron"],
-});
-await build({
-  entrypoints: [path.join(root, "plugins", "scheduler", "src", "renderer.tsx")],
-  outdir: path.join(versionDir, "builtin-plugins", "scheduler", "dist"),
-  target: "browser",
-  format: "iife",
-  naming: "[name].js",
-  loader: {".css": "text"},
-});
-
-await cp(path.join(root, "plugins", "scheduler", ".zdp", "plugin.json"), path.join(versionDir, "builtin-plugins", "scheduler", ".zdp", "plugin.json"));
 await mkdir(runtime, {recursive: true});
 await cp(path.join(root, "src", "loader", "runtime-bootstrap.mjs"), path.join(runtime, "bootstrap.mjs"));
 await writeFile(path.join(runtime, "current.json"), `${JSON.stringify({version: HOST_VERSION}, null, 2)}\n`, "utf8");

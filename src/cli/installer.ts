@@ -50,7 +50,6 @@ export async function doctor(zcodeRoot = DEFAULT_ZCODE_ROOT, zdpRoot = resolveZd
       fuses = fuseReport(wire as unknown as Record<number, FuseState>);
       if ((wire as unknown as Record<number, FuseState>)[FuseV1Options.OnlyLoadAppFromAsar] === FuseState.ENABLE) errors.push("OnlyLoadAppFromAsar is enabled");
       if ((wire as unknown as Record<number, FuseState>)[FuseV1Options.EnableEmbeddedAsarIntegrityValidation] === FuseState.ENABLE) errors.push("Embedded ASAR integrity validation is enabled");
-      if ((wire as unknown as Record<number, FuseState>)[FuseV1Options.RunAsNode] !== FuseState.ENABLE) errors.push("RunAsNode is not enabled; ZCode app-server cannot be launched safely");
     } catch (error) { errors.push(`Could not read Electron fuses: ${errorText(error)}`); }
   }
   const loaderPresent = await isManagedLoader(path.join(resources, "app"));

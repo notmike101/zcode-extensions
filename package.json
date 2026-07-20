@@ -1,6 +1,6 @@
 {
   "name": "zcode-desktop-extensions",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "An update-resistant extension host for the ZCode Electron desktop application.",
   "private": true,
   "license": "MIT",
@@ -23,15 +23,16 @@
   "dependencies": {
     "@electron/asar": "^4.0.1",
     "@electron/fuses": "^2.1.2",
-    "croner": "^10.0.1",
     "preact": "^10.27.2",
     "semver": "^7.7.2",
+    "yauzl": "^3.4.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/bun": "^1.3.4",
     "@types/node": "^24.10.1",
     "@types/semver": "^7.7.1",
+    "@types/yauzl": "^3.4.0",
     "electron": "41.0.3",
     "typescript": "^5.9.3"
   }

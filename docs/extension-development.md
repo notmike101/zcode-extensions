@@ -22,7 +22,8 @@ For a separate project, copy the example and `sdk/index.ts` together or reproduc
 ```text
 hello-extension/
 ├── .zdp/
-│   └── plugin.json
+│   ├── plugin.json
+│   └── update.json        # optional update feed pointer
 ├── dist/
 │   ├── main.cjs
 │   └── renderer.js
@@ -64,7 +65,7 @@ The manifest filename remains `.zdp\plugin.json` for API compatibility:
 | `apiVersion` | Must be `1`. |
 | `id` | Lowercase letters, numbers, dots, and hyphens; 1–64 characters with alphanumeric ends. This is the IPC, data, and renderer namespace. |
 | `name` | User-facing name, at most 80 characters. |
-| `version` | Extension version. Semantic versioning is recommended. |
+| `version` | Extension version. Semantic versioning is required to participate in automatic updates. |
 | `description` | Optional user-facing description, at most 500 characters. |
 | `entrypoints.main` | Optional Node.js entrypoint. Bundle as CommonJS. |
 | `entrypoints.renderer` | Optional browser entrypoint. Bundle as a self-registering IIFE. |
@@ -110,7 +111,8 @@ Activation failures are isolated to the extension and shown in the manager. Disa
 | `ipc.emit(event, payload)` | Emit `plugin:<id>:<event>` to renderer bridges. |
 | `lifecycle.onResume(handler)` | Run after Windows resume or unlock and receive a disposable. |
 | `zcode.readWorkspaceState(path)` | Read ZCode's current stored workspace state through the task protocol. |
-| `zcode.tasks.run(spec)` | Start a normal ZCode task and receive a run handle. |
+| `zcode.tasks.run(spec)` | Start a normal persistent ZCode sidebar task and receive a run handle. |
+| `zcode.tasks.ensureVisible(spec)` | Restore a retained session to the native task index and optionally assign its title. Useful for one-time migrations. |
 
 IPC method and event names use the identifier pattern. Duplicate handlers are rejected.
 
@@ -167,6 +169,7 @@ Do not call host management methods such as install or uninstall from extension 
 const handle = await context.zcode.tasks.run({
   workspacePath: "D:\\project",
   prompt: "Run the weekly maintenance task.",
+  title: "⏰ Weekly maintenance",
   mode: "build",
   model: {
     providerId: "openai",
@@ -182,11 +185,11 @@ context.logger.info("Task started", {sessionId: handle.sessionId});
 const result = await handle.completion;
 ```
 
-`mode` is required by the TypeScript SDK; runtime validation defaults an omitted JavaScript value to `plan`. Model, thought level, timeout, and tool lists are optional. With no explicit model, the host inherits the newest compatible ZCode desktop selection for the workspace and then the most recent global selection.
+`mode` is required by the TypeScript SDK; runtime validation defaults an omitted JavaScript value to `plan`. Title, model, thought level, timeout, and tool lists are optional. The title is applied to the ordinary native task visible in ZCode's sidebar. With no explicit model, ZCode's desktop service resolves its normal workspace or global selection.
 
 The completion status is one of `succeeded`, `failed`, `cancelled`, `timed_out`, `lost`, or `needs_attention`. Call `handle.stop()` during extension cleanup when an active run must be cancelled.
 
-The ZCode task protocol is private and can change between ZCode releases. Use conservative engine ranges, handle protocol errors, and test against every ZCode version you claim to support.
+The ZCode desktop task service is private and can change between ZCode releases. Use conservative engine ranges, handle service errors, and test against every ZCode version you claim to support. The host does not patch ZCode's task database or vendor source to provide this API.
 
 ## Persistence and scheduling
 
@@ -196,7 +199,7 @@ The ZCode task protocol is private and can change between ZCode releases. Use co
 - Register resume handlers when time-sensitive state must be recalculated after sleep.
 - Define missed-run, overlap, cancellation, and retry behavior explicitly.
 
-The Scheduler extension under [`plugins/scheduler`](../plugins/scheduler) is the full reference for persistent jobs, cron timezones, overlap policies, task handles, bounded history, and resume behavior.
+The separate [Scheduler repository](https://github.com/notmike101/zcode-scheduler) is the full reference for persistent jobs, cron timezones, overlap policies, native task handles, bounded history, migrations, and resume behavior.
 
 ## Build and package
 
@@ -224,6 +227,38 @@ The main entrypoint is loaded with Node's CommonJS loader. The renderer must exe
 
 An installable ZIP should expand to one folder containing `.zdp` and the built entrypoints. Do not include `node_modules` when dependencies are already bundled.
 
+## Extension updates
+
+To opt into host-managed updates, add `.zdp/update.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "manifestUrl": "https://example.com/releases/latest/download/extension-update.json"
+}
+```
+
+The feed must be served over HTTPS and contain a release manifest:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "hello-extension",
+  "apiVersion": 1,
+  "version": "0.2.0",
+  "engines": {"host": ">=0.2.0 <1", "zcode": ">=3.3.6"},
+  "archive": {
+    "url": "https://example.com/releases/v0.2.0/hello-extension-v0.2.0.zip",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 12345
+  },
+  "releaseUrl": "https://example.com/releases/v0.2.0",
+  "publishedAt": "2026-07-19T12:00:00.000Z"
+}
+```
+
+The host bounds feed, archive, entry-count, and expanded sizes; verifies the exact archive size and SHA-256; rejects traversal, links, duplicate paths, and multiple roots; validates both manifests and engine ranges; and stages the result for the next launch. An activation failure rolls an enabled extension back to its prior bundle. Private state under `context.dataDir` is never included in the transaction.
+
 ## Development workflow
 
 1. Build the extension.
@@ -234,11 +269,13 @@ An installable ZIP should expand to one folder containing `.zdp` and the built e
 6. Disable and re-enable to verify cleanup and cold activation.
 7. Close and reopen ZCode to verify persistence.
 8. Test safe mode and incompatible host/ZCode ranges before publishing.
+9. Serve a candidate update feed and verify queue, restart application, activation, and rollback behavior.
 
 ## Release checklist
 
 - Bundle both entrypoints and verify their exact manifest paths.
 - Increment the extension version.
+- If updates are supported, publish a matching immutable ZIP, checksum, and `extension-update.json` feed.
 - Keep `apiVersion` at `1` until the host introduces another API.
 - Set the narrowest accurate host and ZCode engine ranges.
 - Validate every IPC payload and renderer result.

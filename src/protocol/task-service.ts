@@ -1,9 +1,14 @@
+import {randomUUID} from "node:crypto";
 import {EventEmitter} from "node:events";
 import path from "node:path";
 import type {JsonLogger} from "../shared/logger.ts";
-import {modelRefSchema, taskSpecSchema, type TaskSpec} from "../shared/schemas.ts";
-import {ZCodeProtocolClient} from "./client.ts";
-import {resolveDesktopRuntimeModel, type RuntimeModelConfig} from "./desktop-model.ts";
+import {taskSpecSchema, type TaskSpec} from "../shared/schemas.ts";
+import type {
+  DesktopServiceConnection,
+  DesktopServicePort,
+  DesktopServicePortBroker,
+  Disposable,
+} from "./desktop-service.ts";
 
 export type TaskResultStatus = "succeeded" | "failed" | "cancelled" | "timed_out" | "lost" | "needs_attention";
 
@@ -19,248 +24,362 @@ export type TaskRunHandle = {
   stop: () => Promise<void>;
 };
 
+export type VisibleTaskSpec = {
+  sessionId: string;
+  workspacePath: string;
+  title?: string;
+};
+
 type TaskServiceOptions = {
-  executable: string;
-  zcodeRoot: string;
-  resourcesPath: string;
+  vendorAsar: string;
+  portBroker: Pick<DesktopServicePortBroker, "current" | "onChange" | "waitForPort" | "dispose">;
   logger: JsonLogger;
   onHealth?: (status: "idle" | "starting" | "ready" | "error", error?: string) => void;
+  connect?: (port: DesktopServicePort["port"], vendorAsar: string) => Promise<DesktopServiceConnection>;
 };
 
 type SessionSnapshot = {
-  protocol?: {name?: string; version?: number};
-  session?: {sessionId?: string; status?: string};
+  session?: {
+    sessionId?: string;
+    status?: string;
+    workspace?: {workspacePath?: string; workspaceIdentity?: string};
+  };
   runtime?: {mainActive?: boolean; activeTurnId?: string};
-  settings?: {model?: {current?: {providerId: string; modelId: string; variant?: string}}};
+};
+
+type SessionService = {
+  resumeSession: (input: Record<string, unknown>) => Promise<SessionSnapshot>;
+  readWorkspaceState: (input: Record<string, unknown>) => Promise<unknown>;
+  sendPrompt: (input: Record<string, unknown>) => Promise<unknown>;
+  stopSession: (input: Record<string, unknown>) => Promise<unknown>;
+  onDynamicSessionEvent: (input: Record<string, unknown>) => (listener: (event: unknown) => void) => Disposable;
+};
+
+type TaskIndexService = {
+  createTask: (input: Record<string, unknown>) => Promise<unknown>;
+  getTaskMeta: (input: Record<string, unknown>) => Promise<unknown>;
+  renameTask: (input: Record<string, unknown>) => Promise<unknown>;
+};
+
+type BroadcastService = {
+  send: (input: {channel: string; payload: Record<string, unknown>}) => Promise<unknown>;
+};
+
+type ActiveRun = {
+  sessionId: string;
+  inputId: string;
+  title?: string;
+  target: Record<string, unknown>;
+  broadcast: BroadcastService;
+  interactionBlocked: boolean;
+  finish: (result: TaskResult) => void;
+  subscription: Disposable;
+  timeout?: NodeJS.Timeout;
 };
 
 export class TaskService extends EventEmitter {
   readonly #options: TaskServiceOptions;
-  #client?: ZCodeProtocolClient;
-  #starting?: Promise<ZCodeProtocolClient>;
-  #runs = new Map<string, {finish: (result: TaskResult) => void; interactionBlocked: boolean}>();
+  readonly #runs = new Map<string, ActiveRun>();
+  readonly #portSubscription: {dispose: () => void};
+  #connection?: DesktopServiceConnection;
+  #connecting?: Promise<DesktopServiceConnection>;
+  #port?: DesktopServicePort;
 
   constructor(options: TaskServiceOptions) {
     super();
     this.#options = options;
+    this.#port = options.portBroker.current();
+    this.#portSubscription = options.portBroker.onChange((entry) => this.#onPortChanged(entry));
   }
 
   async readWorkspaceState(workspacePath: string): Promise<unknown> {
-    const client = await this.#ensureClient();
-    const desktop = resolveDesktopRuntimeModel(workspacePath);
-    return client.request("workspace/readState", {
-      workspace: workspaceRef(workspacePath),
-      ...(desktop?.runtimeModel ? {runtimeModel: desktop.runtimeModel} : {}),
-    });
+    const {session} = await this.#services();
+    return session.readWorkspaceState(workspaceTarget(workspacePath));
+  }
+
+  async ensureVisible(input: VisibleTaskSpec): Promise<void> {
+    const {broadcast, session, task} = await this.#services();
+    const target = workspaceTarget(input.workspacePath);
+    const taskTarget = {...target, taskId: input.sessionId};
+    const current = await task.getTaskMeta(taskTarget);
+    if (!current) {
+      await session.resumeSession({...target, sessionId: input.sessionId, broadcastSnapshot: true});
+    }
+    const materialized = asRecord(await task.createTask({
+      ...target,
+      draftSessionId: input.sessionId,
+      mode: "plan",
+    }));
+    const materializedTaskId = stringValue(materialized.taskId);
+    if (materializedTaskId !== input.sessionId) {
+      throw new Error(`ZCode rematerialized ${input.sessionId} as unexpected task ${materializedTaskId ?? "<missing>"}`);
+    }
+    const title = input.title?.trim();
+    const visibleTask = title
+      ? await this.#rename(task, target, input.sessionId, title) ?? materialized
+      : materialized;
+    await this.#broadcastTaskChange(broadcast, target, input.sessionId, "created", {task: visibleTask});
   }
 
   async run(input: TaskSpec): Promise<TaskRunHandle> {
     const spec = taskSpecSchema.parse(input);
-    const client = await this.#ensureClient();
-    const workspace = workspaceRef(spec.workspacePath);
-    const desktop = resolveDesktopRuntimeModel(spec.workspacePath, spec.model);
-    let selectedModel = desktop?.model ?? spec.model;
-    let runtimeModel: RuntimeModelConfig | undefined = desktop?.runtimeModel;
-    if (desktop && !spec.model) {
-      await this.#options.logger.info("Inherited ZCode desktop model selection", {
-        workspacePath: spec.workspacePath,
-        source: desktop.source,
-        model: desktop.model,
-        hasRuntimeModel: Boolean(desktop.runtimeModel),
-      });
-    }
-    if (!selectedModel) {
-      try {
-        const state = await client.request<{settings?: {model?: {current?: unknown}}}>("workspace/readState", {
-          workspace,
-          ...(runtimeModel ? {runtimeModel} : {}),
-        });
-        const current = modelRefSchema.safeParse(state.settings?.model?.current);
-        if (current.success) {
-          const resolved = resolveDesktopRuntimeModel(spec.workspacePath, current.data);
-          selectedModel = resolved?.model ?? current.data;
-          runtimeModel = resolved?.runtimeModel;
-        }
-      } catch (error) {
-        await this.#options.logger.warn("Could not read the workspace model selection", {workspacePath: spec.workspacePath, error});
-      }
-    }
-    if (!selectedModel) throw new Error("No ZCode model is available. Run a desktop task first or pin a provider and model on this scheduled job.");
-    if (!runtimeModel) {
-      await this.#options.logger.warn("ZCode desktop runtime model config was unavailable", {
-        workspacePath: spec.workspacePath,
-        model: selectedModel,
-      });
-    }
-    const snapshot = await client.request<SessionSnapshot>("session/create", {
-      workspace,
+    const {broadcast, session, task} = await this.#services();
+    const target = workspaceTarget(spec.workspacePath);
+    const createdTask = asRecord(await task.createTask({
+      ...target,
       mode: spec.mode,
-      persistence: "immediate",
-      model: selectedModel,
-      ...(runtimeModel ? {runtimeModel} : {}),
+      ...(spec.model ? {model: spec.model} : {}),
       ...(spec.thoughtLevel ? {thoughtLevel: spec.thoughtLevel} : {}),
       ...(spec.toolAllowlist ? {toolAllowlist: spec.toolAllowlist} : {}),
       ...(spec.toolDenylist ? {toolDenylist: spec.toolDenylist} : {}),
-    }, 90_000);
-    if (snapshot.protocol?.name !== "ZCode Protocol" || snapshot.protocol.version !== 1) {
-      throw new Error(`Unsupported ZCode Protocol: ${snapshot.protocol?.name ?? "unknown"} v${snapshot.protocol?.version ?? "unknown"}`);
-    }
-    const sessionId = snapshot.session?.sessionId;
-    if (!sessionId) throw new Error("ZCode did not return a session ID");
-    await client.request("session/subscribe", {
+    }));
+    const sessionId = stringValue(createdTask.taskId);
+    if (!sessionId) throw new Error("ZCode did not return a task ID");
+
+    const inputId = randomUUID();
+    const queryId = randomUUID();
+    const messageId = randomUUID();
+    let resolveCompletion!: (result: TaskResult) => void;
+    const completion = new Promise<TaskResult>((resolve) => { resolveCompletion = resolve; });
+    let settled = false;
+
+    const event = session.onDynamicSessionEvent({
+      ...target,
       sessionId,
       deliveryKind: "desktop-continuous",
       includeSnapshot: true,
     });
-
-    let resolveCompletion!: (result: TaskResult) => void;
-    const completion = new Promise<TaskResult>((resolve) => { resolveCompletion = resolve; });
-    let settled = false;
+    const run = {} as ActiveRun;
     const finish = (result: TaskResult) => {
       if (settled) return;
       settled = true;
       this.#runs.delete(sessionId);
+      run.subscription?.dispose();
+      if (run.timeout) clearTimeout(run.timeout);
       resolveCompletion(result);
-      void client.request("session/close", {sessionId, expectedPersistence: "immediate"}).catch(() => undefined);
+      if (run.title) void this.#rename(task, target, sessionId, run.title);
+      void this.#broadcastTaskChange(
+        run.broadcast,
+        run.target,
+        run.sessionId,
+        result.status === "failed" || result.status === "timed_out" || result.status === "lost" ? "error" : "completed",
+        result.error ? {error: result.error} : {},
+      );
       this.emit("task-finished", result);
     };
-    this.#runs.set(sessionId, {finish, interactionBlocked: false});
-
-    await client.request("session/send", {
+    Object.assign(run, {
       sessionId,
-      content: spec.prompt,
-      ...(runtimeModel ? {runtimeModel} : {}),
-    }, 90_000);
-    this.emit("task-started", {sessionId, spec});
+      inputId,
+      title: spec.title?.trim() || undefined,
+      target,
+      broadcast,
+      interactionBlocked: false,
+      finish,
+      subscription: event((value) => this.#onSessionEvent(run, value)),
+    } satisfies ActiveRun);
+    this.#runs.set(sessionId, run);
 
-    let timeout: NodeJS.Timeout | undefined;
+    try {
+      const visibleTask = run.title
+        ? await this.#rename(task, target, sessionId, run.title) ?? createdTask
+        : createdTask;
+      await this.#broadcastTaskChange(broadcast, target, sessionId, "created", {task: visibleTask});
+      await session.sendPrompt({
+        ...target,
+        sessionId,
+        inputId,
+        queryId,
+        messageId,
+        content: spec.prompt,
+      });
+      if (run.title) await this.#rename(task, target, sessionId, run.title);
+      await this.#broadcastTaskChange(broadcast, target, sessionId, "prompt_sent", {
+        prompt: {content: spec.prompt, messageId, sentAt: Date.now()},
+      });
+    } catch (error) {
+      this.#runs.delete(sessionId);
+      run.subscription.dispose();
+      throw error;
+    }
+
     if (spec.timeoutMs) {
-      timeout = setTimeout(() => {
-        void client.request("session/stop", {sessionId}).catch(() => undefined);
+      run.timeout = setTimeout(() => {
+        void session.stopSession({...target, sessionId}).catch(() => undefined);
         finish({sessionId, status: "timed_out", error: `Task exceeded ${spec.timeoutMs} ms`});
       }, spec.timeoutMs);
     }
-    completion.finally(() => timeout && clearTimeout(timeout));
-    void this.#pollUntilFinished(sessionId, finish);
+    this.emit("task-started", {sessionId, spec});
 
     return {
       sessionId,
       completion,
       stop: async () => {
         if (settled) return;
-        await client.request("session/stop", {sessionId}).catch(() => undefined);
+        await session.stopSession({...target, sessionId}).catch(() => undefined);
         finish({sessionId, status: "cancelled"});
       },
     };
   }
 
-  async shutdown(graceMs = 10_000): Promise<void> {
-    const client = this.#client;
-    if (!client) return;
-    const active = [...this.#runs.keys()];
-    await Promise.all(active.map((sessionId) => client.request("session/stop", {sessionId}).catch(() => undefined)));
-    if (active.length) await new Promise((resolve) => setTimeout(resolve, Math.min(graceMs, 10_000)));
-    for (const [sessionId, run] of this.#runs) run.finish({sessionId, status: "cancelled"});
-    await client.stop(2_000);
-    this.#client = undefined;
+  async shutdown(): Promise<void> {
+    const connection = this.#connection;
+    if (connection) {
+      const session = connection.session as unknown as SessionService;
+      await Promise.all([...this.#runs.values()].map((run) =>
+        session.stopSession({...run.target, sessionId: run.sessionId}).catch(() => undefined),
+      ));
+    }
+    for (const run of [...this.#runs.values()]) run.finish({sessionId: run.sessionId, status: "cancelled"});
+    this.#portSubscription.dispose();
+    this.#connection?.dispose();
+    this.#connection = undefined;
+    this.#options.portBroker.dispose();
     this.#options.onHealth?.("idle");
   }
 
-  async #ensureClient(): Promise<ZCodeProtocolClient> {
-    if (this.#client?.running) return this.#client;
-    if (this.#starting) return this.#starting;
+  async #services(): Promise<{broadcast: BroadcastService; session: SessionService; task: TaskIndexService}> {
+    const connection = await this.#ensureConnection();
+    return {
+      broadcast: connection.broadcast as unknown as BroadcastService,
+      session: connection.session as unknown as SessionService,
+      task: connection.task as unknown as TaskIndexService,
+    };
+  }
+
+  async #ensureConnection(): Promise<DesktopServiceConnection> {
+    if (this.#connection) return this.#connection;
+    if (this.#connecting) return this.#connecting;
     this.#options.onHealth?.("starting");
-    this.#starting = (async () => {
-      const cli = path.join(this.#options.resourcesPath, "glm", "zcode.cjs");
-      const client = new ZCodeProtocolClient({
-        executable: this.#options.executable,
-        args: [cli, "app-server"],
-        cwd: this.#options.zcodeRoot,
-        env: {ELECTRON_RUN_AS_NODE: "1", ZDP_APP_SERVER: "1"},
-        logger: this.#options.logger.child("app-server"),
-        requestHandler: (method, params) => this.#handleInteraction(method, params),
-      });
-      client.on("notification", (method, params) => this.#onNotification(method, params));
-      client.on("exit", (error: Error) => {
-        if (this.#client === client) this.#client = undefined;
-        for (const [sessionId, run] of this.#runs) run.finish({sessionId, status: "lost", error: error.message});
-        this.#options.onHealth?.("error", error.message);
-      });
-      await client.start();
-      this.#client = client;
+    this.#connecting = (async () => {
+      const entry = this.#port ?? await this.#options.portBroker.waitForPort();
+      this.#port = entry;
+      const connection = await (this.#options.connect ?? connectDesktopServices)(entry.port, this.#options.vendorAsar);
+      this.#connection = connection;
       this.#options.onHealth?.("ready");
-      return client;
+      return connection;
     })().catch((error) => {
-      this.#options.onHealth?.("error", error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      this.#options.onHealth?.("error", message);
       throw error;
-    }).finally(() => { this.#starting = undefined; });
-    return this.#starting;
+    }).finally(() => { this.#connecting = undefined; });
+    return this.#connecting;
   }
 
-  async #handleInteraction(method: string, params: unknown): Promise<unknown> {
-    const sessionId = typeof params === "object" && params && "sessionId" in params ? String((params as {sessionId: unknown}).sessionId) : undefined;
-    if (sessionId) {
-      const run = this.#runs.get(sessionId);
-      if (run) run.interactionBlocked = true;
-    }
-    if (method === "interaction/requestPermission") {
-      return {decision: "deny", reason: "Scheduled ZCode tasks cannot approve interactive permission requests."};
-    }
-    if (method === "interaction/requestUserInput") {
-      return {action: "cancel", reason: "Scheduled ZCode tasks cannot answer interactive questions."};
-    }
-    if (method === "interaction/requestProviderRuntimeHeaders") {
-      return {headersApplied: false, errorMessage: "Provider requires interactive runtime credentials."};
-    }
-    throw new Error(`Unsupported ZCode interaction request: ${method}`);
-  }
-
-  #onNotification(method: string, params: unknown): void {
-    if (method !== "session/event" || typeof params !== "object" || !params) return;
-    const envelope = params as {sessionId?: string; events?: Array<{type?: string; sessionId?: string; error?: unknown}>};
-    for (const event of envelope.events ?? []) {
-      const sessionId = event.sessionId ?? envelope.sessionId;
-      if (!sessionId) continue;
-      const run = this.#runs.get(sessionId);
-      if (!run) continue;
-      if (event.type === "turn.completed") {
-        run.finish({sessionId, status: run.interactionBlocked ? "needs_attention" : "succeeded"});
-      } else if (event.type === "turn.failed") {
-        run.finish({sessionId, status: run.interactionBlocked ? "needs_attention" : "failed", error: stringifyUnknown(event.error)});
+  #onPortChanged(entry: DesktopServicePort | undefined): void {
+    if (entry?.process === this.#port?.process) return;
+    this.#port = entry;
+    this.#connection?.dispose();
+    this.#connection = undefined;
+    this.#connecting = undefined;
+    if (!entry) {
+      for (const run of [...this.#runs.values()]) {
+        run.finish({sessionId: run.sessionId, status: "lost", error: "The ZCode desktop service host exited"});
       }
+      this.#options.onHealth?.("error", "The ZCode desktop service host is unavailable");
+    } else {
+      this.#options.onHealth?.("starting");
     }
   }
 
-  async #pollUntilFinished(sessionId: string, finish: (result: TaskResult) => void): Promise<void> {
-    let seenActive = false;
-    while (this.#runs.has(sessionId)) {
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
-      if (!this.#runs.has(sessionId)) return;
-      try {
-        const snapshot = await this.#client?.request<SessionSnapshot>("session/read", {sessionId, messageLimit: 5});
-        if (!snapshot) continue;
-        if (snapshot.runtime?.mainActive || snapshot.runtime?.activeTurnId) seenActive = true;
-        if (snapshot.session?.status === "error") {
-          finish({sessionId, status: "failed", error: "ZCode reported a session error"});
-        } else if (seenActive && !snapshot.runtime?.mainActive && !snapshot.runtime?.activeTurnId) {
-          const blocked = this.#runs.get(sessionId)?.interactionBlocked;
-          finish({sessionId, status: blocked ? "needs_attention" : "succeeded"});
-        }
-      } catch (error) {
-        await this.#options.logger.warn("Failed to poll task", {sessionId, error});
-      }
+  #onSessionEvent(run: ActiveRun, value: unknown): void {
+    const envelope = asRecord(value);
+    const envelopeType = stringValue(envelope.type);
+    if (envelopeType === "permission.request" || envelopeType === "userInput.request" || envelopeType === "providerRuntimeHeaders.request") {
+      run.interactionBlocked = true;
+      return;
+    }
+    if (envelopeType !== "session.event") return;
+    const event = asRecord(envelope.event);
+    const eventType = stringValue(event.type);
+    const payload = asRecord(event.payload);
+    const eventInputId = stringValue(payload.inputId);
+    if (eventInputId && eventInputId !== run.inputId) return;
+    if (eventType === "permission.requested" || eventType === "elicitation.requested") {
+      run.interactionBlocked = true;
+      return;
+    }
+    if (eventType === "session.titleUpdated" && run.title) {
+      void this.#services().then(({task}) => this.#rename(task, run.target, run.sessionId, run.title!));
+      return;
+    }
+    if (eventType === "turn.completed") {
+      const resultType = stringValue(payload.resultType) ?? "success";
+      if (resultType === "cancelled") run.finish({sessionId: run.sessionId, status: "cancelled"});
+      else if (resultType !== "success") run.finish({sessionId: run.sessionId, status: "failed", error: resultType});
+      else run.finish({sessionId: run.sessionId, status: run.interactionBlocked ? "needs_attention" : "succeeded"});
+    } else if (eventType === "turn.failed") {
+      const error = asRecord(payload.error);
+      run.finish({
+        sessionId: run.sessionId,
+        status: run.interactionBlocked ? "needs_attention" : "failed",
+        error: stringValue(error.message) ?? stringValue(error.detail) ?? "ZCode session turn failed",
+      });
+    }
+  }
+
+  async #rename(
+    task: TaskIndexService,
+    target: Record<string, unknown>,
+    sessionId: string,
+    title: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      return asRecord(await task.renameTask({...target, taskId: sessionId, title}));
+    } catch (error) {
+      await this.#options.logger.warn("Could not assign the scheduled task title", {sessionId, title, error});
+      return undefined;
+    }
+  }
+
+  async #broadcastTaskChange(
+    broadcast: BroadcastService,
+    target: Record<string, unknown>,
+    sessionId: string,
+    event: "created" | "prompt_sent" | "completed" | "error",
+    extra: Record<string, unknown> = {},
+  ): Promise<void> {
+    const task = asRecord(extra.task);
+    const workspacePath = stringValue(task.workspacePath) ?? stringValue(target.workspacePath);
+    if (!workspacePath) return;
+    const workspaceIdentity = stringValue(task.workspaceIdentity) ?? stringValue(target.workspaceIdentity);
+    try {
+      await broadcast.send({
+        channel: "bots:task",
+        payload: {
+          workspacePath,
+          ...(workspaceIdentity ? {workspaceIdentity} : {}),
+          taskId: sessionId,
+          event,
+          updatedAt: Date.now(),
+          ...extra,
+        },
+      });
+    } catch (error) {
+      await this.#options.logger.warn("Could not broadcast the scheduled task sidebar update", {
+        sessionId,
+        event,
+        error,
+      });
     }
   }
 }
 
-function workspaceRef(workspacePath: string) {
-  const resolved = path.resolve(workspacePath);
-  return {workspacePath: resolved, workspaceKey: resolved};
+async function connectDesktopServices(
+  port: DesktopServicePort["port"],
+  vendorAsar: string,
+): Promise<DesktopServiceConnection> {
+  const desktop = await import("./desktop-service.ts");
+  return desktop.connectDesktopServices(port, vendorAsar);
 }
 
-function stringifyUnknown(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  if (value instanceof Error) return value.message;
-  if (typeof value === "string") return value;
-  try { return JSON.stringify(value); } catch { return String(value); }
+function workspaceTarget(workspacePath: string): Record<string, unknown> {
+  return {workspacePath: path.resolve(workspacePath)};
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

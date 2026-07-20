@@ -1,6 +1,6 @@
 import {render} from "preact";
 import {useEffect, useMemo, useRef, useState} from "preact/hooks";
-import type {HostState, PluginStatus} from "../shared/schemas.ts";
+import type {CatalogExtensionStatus, HostState, PluginStatus} from "../shared/schemas.ts";
 import type {RendererPlugin, ZdpBridge} from "./globals.d.ts";
 import styles from "./styles.css";
 
@@ -9,6 +9,7 @@ if (!bridge) throw new Error("ZCode Desktop Extensions preload bridge is unavail
 
 const modules = window.__zdpRendererPlugins ?? new Map<string, RendererPlugin>();
 window.__zdpRendererPlugins = modules;
+let nativeNavigationUpdateCount = 0;
 window.ZDP_REGISTER_PLUGIN_RENDERER = (plugin) => {
   modules.set(plugin.id, plugin);
   window.dispatchEvent(new CustomEvent("zdp-renderer-registered", {detail: plugin.id}));
@@ -63,6 +64,9 @@ function DesktopPluginsApp({bridge}: {bridge: ZdpBridge}) {
 
   useEffect(() => installNativeNavigationItem(() => setOpen(true)), []);
 
+  const availableUpdateCount = state?.plugins.filter((plugin) => plugin.update.state === "available").length ?? 0;
+  useEffect(() => updateNativeNavigationBadge(availableUpdateCount), [availableUpdateCount]);
+
   const pages = useMemo(() => state?.plugins.flatMap((plugin) => plugin.enabled
     ? plugin.manifest.pages.map((page) => ({...page, pluginId: plugin.manifest.id}))
     : []) ?? [], [state, rendererRevision]);
@@ -83,7 +87,8 @@ function DesktopPluginsApp({bridge}: {bridge: ZdpBridge}) {
         </header>
         <div class="zdp-body">
           <nav class="zdp-nav">
-            <button class={activePage === "plugins" ? "active" : ""} onClick={() => setActivePage("plugins")}>Installed</button>
+            <button class={activePage === "plugins" ? "active" : ""} onClick={() => setActivePage("plugins")}>Installed{availableUpdateCount ? ` (${availableUpdateCount})` : ""}</button>
+            <button class={activePage === "available" ? "active" : ""} onClick={() => setActivePage("available")}>Available</button>
             <button class={activePage === "health" ? "active" : ""} onClick={() => setActivePage("health")}>Health</button>
             {pages.map((page) => <button class={activePage === `${page.pluginId}:${page.id}` ? "active" : ""}
               onClick={() => setActivePage(`${page.pluginId}:${page.id}`)}>{page.title}</button>)}
@@ -91,6 +96,7 @@ function DesktopPluginsApp({bridge}: {bridge: ZdpBridge}) {
           <main class="zdp-content">
             {error && <div class="zdp-alert"><strong>Action failed</strong><span>{error}</span></div>}
             {activePage === "plugins" && <PluginList state={state} busy={busy} run={run} bridge={bridge}/>} 
+            {activePage === "available" && <AvailableExtensions state={state} busy={busy} run={run} bridge={bridge}/>}
             {activePage === "health" && <HealthPage state={state} bridge={bridge}/>} 
             {activePage.includes(":") && <PluginPage key={`${activePage}:${rendererRevision}`} page={activePage} bridge={bridge}/>} 
           </main>
@@ -112,6 +118,7 @@ function installNativeNavigationItem(open: () => void): () => void {
     if (existing) {
       navigationItem = existing;
       if (skillsButton.nextElementSibling !== existing) skillsButton.insertAdjacentElement("afterend", existing);
+      updateNativeNavigationBadge(nativeNavigationUpdateCount);
       return;
     }
 
@@ -126,6 +133,7 @@ function installNativeNavigationItem(open: () => void): () => void {
     item.addEventListener("click", open);
     skillsButton.insertAdjacentElement("afterend", item);
     navigationItem = item;
+    updateNativeNavigationBadge(nativeNavigationUpdateCount);
   };
 
   const scheduleNavigationSync = () => {
@@ -146,6 +154,35 @@ function installNativeNavigationItem(open: () => void): () => void {
     navigationItem?.removeEventListener("click", open);
     navigationItem?.remove();
   };
+}
+
+function updateNativeNavigationBadge(count: number): void {
+  nativeNavigationUpdateCount = count;
+  const item = document.querySelector<HTMLButtonElement>("button[data-zdp-navigation-item]");
+  if (!item) return;
+  const existing = item.querySelector<HTMLElement>("[data-zdp-update-badge]");
+  if (count === 0) {
+    existing?.remove();
+    item.title = "ZCode Desktop Extensions";
+    item.setAttribute("aria-label", "ZCode Desktop Extensions");
+    return;
+  }
+  const badge = existing ?? document.createElement("span");
+  badge.setAttribute("data-zdp-update-badge", "true");
+  badge.textContent = String(count);
+  Object.assign(badge.style, {
+    marginLeft: "auto",
+    minWidth: "18px",
+    borderRadius: "999px",
+    padding: "1px 5px",
+    background: "#5368d8",
+    color: "white",
+    fontSize: "10px",
+    textAlign: "center",
+  });
+  if (!existing) item.append(badge);
+  item.title = `${count} extension update${count === 1 ? "" : "s"} available`;
+  item.setAttribute("aria-label", item.title);
 }
 
 function findSkillsNavigationButton(): HTMLButtonElement | undefined {
@@ -203,9 +240,13 @@ function PluginList({state, busy, run, bridge}: {
     if (!window.confirm("Desktop extensions are trusted local code and can access your files. Install this folder?")) return;
     await bridge.invoke("plugin:install", {path: folder});
   };
+  const check = () => bridge.invoke("extension:checkUpdates");
   return <div>
     <div class="zdp-section-title"><div><h2>Installed extensions</h2><p>Extensions run separately from ZCode's skills, commands, hooks, and MCP integrations.</p></div>
-      <button class="zdp-primary" disabled={Boolean(busy)} onClick={() => run("install", install)}>Install extension</button></div>
+      <div class="zdp-section-actions">
+        <button disabled={Boolean(busy)} onClick={() => run("check-updates", check)}>Check for updates</button>
+        <button class="zdp-primary" disabled={Boolean(busy)} onClick={() => run("install", install)}>Install folder</button>
+      </div></div>
     <div class="zdp-cards">
       {state?.plugins.map((plugin) => <PluginCard plugin={plugin} busy={busy} run={run} bridge={bridge}/>)}
       {state && state.plugins.length === 0 && <div class="zdp-empty">No extensions installed.</div>}
@@ -220,12 +261,24 @@ function PluginCard({plugin, busy, run, bridge}: {
   bridge: ZdpBridge;
 }) {
   const key = plugin.manifest.id;
+  const queueUpdate = async () => {
+    const version = plugin.update.latestVersion ?? "the latest version";
+    if (!window.confirm(`Download ${plugin.manifest.name} ${version}? It will be applied the next time ZCode starts.`)) return;
+    await bridge.invoke("extension:queueUpdate", {pluginId: key});
+  };
   return <article class="zdp-card">
     <div class="zdp-card-head"><div><h3>{plugin.manifest.name}</h3><p>{plugin.manifest.description ?? plugin.manifest.id}</p></div>
-      <span class={`zdp-status ${plugin.error ? "error" : plugin.loaded ? "ready" : "idle"}`}>{plugin.error ? "Error" : plugin.loaded ? "Loaded" : "Stopped"}</span></div>
+      <span class={`zdp-status ${plugin.update.state === "available" || plugin.update.state === "queued" ? "update" : plugin.error ? "error" : plugin.loaded ? "ready" : "idle"}`}>
+        {plugin.update.state === "available" ? "Update available" : plugin.update.state === "queued" ? "Update queued" : plugin.error ? "Error" : plugin.loaded ? "Loaded" : "Stopped"}
+      </span></div>
     {plugin.error && <pre class="zdp-error-text">{plugin.error}</pre>}
+    {plugin.update.state === "queued" && <div class="zdp-update-note">Version {plugin.update.queuedVersion} is verified and will be applied on the next ZCode launch.</div>}
+    {plugin.update.state === "incompatible" && <div class="zdp-update-note warning">Version {plugin.update.latestVersion} requires a different host or ZCode version.</div>}
+    {plugin.update.state === "error" && <div class="zdp-update-note warning">Update check failed: {plugin.update.error}</div>}
     <div class="zdp-meta"><span>{plugin.manifest.version}</span><span>{plugin.manifest.id}</span></div>
     <div class="zdp-actions">
+      {plugin.update.state === "available" && <button class="zdp-primary" disabled={Boolean(busy)} onClick={() => run(`${key}:update`, queueUpdate)}>Install update</button>}
+      {plugin.update.state === "queued" && <button disabled={Boolean(busy)} onClick={() => run(`${key}:cancel-update`, () => bridge.invoke("extension:cancelUpdate", {pluginId: key}))}>Cancel update</button>}
       <button disabled={Boolean(busy)} onClick={() => run(`${key}:toggle`, () => bridge.invoke("plugin:setEnabled", {pluginId: key, enabled: !plugin.enabled}))}>{plugin.enabled ? "Disable" : "Enable"}</button>
       <button disabled={Boolean(busy) || !plugin.enabled} onClick={() => run(`${key}:reload`, () => bridge.invoke("plugin:reload", {pluginId: key}))}>Reload</button>
       <button class="danger" disabled={Boolean(busy)} onClick={() => {
@@ -237,13 +290,52 @@ function PluginCard({plugin, busy, run, bridge}: {
   </article>;
 }
 
+function AvailableExtensions({state, busy, run, bridge}: {
+  state: HostState | null;
+  busy?: string;
+  run: (key: string, action: () => Promise<unknown>) => Promise<void>;
+  bridge: ZdpBridge;
+}) {
+  return <div>
+    <div class="zdp-section-title"><div><h2>Available extensions</h2><p>Official extensions are downloaded over HTTPS and verified against their published SHA-256 checksum.</p></div>
+      <button disabled={Boolean(busy)} onClick={() => run("check-catalog", () => bridge.invoke("extension:checkUpdates"))}>Refresh</button></div>
+    <div class="zdp-cards">
+      {state?.catalog.map((extension) => <CatalogCard extension={extension} busy={busy} run={run} bridge={bridge}/>) }
+      {state && state.catalog.length === 0 && <div class="zdp-empty">No catalog extensions are available.</div>}
+    </div>
+  </div>;
+}
+
+function CatalogCard({extension, busy, run, bridge}: {
+  extension: CatalogExtensionStatus;
+  busy?: string;
+  run: (key: string, action: () => Promise<unknown>) => Promise<void>;
+  bridge: ZdpBridge;
+}) {
+  const install = async () => {
+    if (!window.confirm(`${extension.name} is trusted local code and can access your files. Download and install it?`)) return;
+    await bridge.invoke("catalog:install", {pluginId: extension.id});
+  };
+  return <article class="zdp-card">
+    <div class="zdp-card-head"><div><h3>{extension.name}</h3><p>{extension.description}</p></div>
+      <span class={`zdp-status ${extension.installed ? "ready" : extension.state === "error" || extension.state === "incompatible" ? "error" : "idle"}`}>
+        {extension.installed ? "Installed" : extension.state === "checking" ? "Checking" : extension.state === "incompatible" ? "Incompatible" : extension.state === "error" ? "Unavailable" : "Available"}
+      </span></div>
+    {extension.error && <div class="zdp-update-note warning">{extension.error}</div>}
+    <div class="zdp-meta"><span>{extension.latestVersion ?? "Version unavailable"}</span><span>{extension.id}</span></div>
+    <div class="zdp-actions">
+      {!extension.installed && extension.state === "available" && <button class="zdp-primary" disabled={Boolean(busy)} onClick={() => run(`${extension.id}:catalog-install`, install)}>Install</button>}
+    </div>
+  </article>;
+}
+
 function HealthPage({state, bridge}: {state: HostState | null; bridge: ZdpBridge}) {
   const [logs, setLogs] = useState<string[]>([]);
   useEffect(() => { void bridge.invoke<string[]>("host:getLogs").then(setLogs); }, []);
-  return <div><div class="zdp-section-title"><div><h2>Host health</h2><p>Loader, protocol, and local runtime status.</p></div></div>
+  return <div><div class="zdp-section-title"><div><h2>Host health</h2><p>Loader, native task service, and local runtime status.</p></div></div>
     <dl class="zdp-health">
       <dt>Extension host</dt><dd>{state ? "Ready" : "Loading"}</dd>
-      <dt>ZCode task protocol</dt><dd>{state?.health.protocol ?? "unknown"}{state?.health.protocolError ? ` — ${state.health.protocolError}` : ""}</dd>
+      <dt>ZCode task service</dt><dd>{state?.health.protocol ?? "unknown"}{state?.health.protocolError ? ` — ${state.health.protocolError}` : ""}</dd>
       <dt>Root</dt><dd>{state?.root}</dd><dt>Data</dt><dd>{state?.dataDir}</dd>
     </dl>
     <h3 class="zdp-log-title">Recent host log</h3><pre class="zdp-log">{logs.length ? logs.join("\n") : "No log entries yet."}</pre>

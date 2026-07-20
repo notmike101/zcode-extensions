@@ -7,6 +7,7 @@ import {HOST_NAME, HOST_VERSION, getPaths, resolveZdpRoot} from "../shared/const
 import {writeJsonAtomic} from "../shared/atomic.ts";
 import {JsonLogger} from "../shared/logger.ts";
 import type {HostState} from "../shared/schemas.ts";
+import {DesktopServicePortBroker} from "../protocol/desktop-service.ts";
 import {TaskService} from "../protocol/task-service.ts";
 import {PluginManager} from "./plugin-manager.ts";
 
@@ -28,6 +29,8 @@ const runtimeVersionDir = path.dirname(path.dirname(fileURLToPath(import.meta.ur
 const zcodeRoot = process.env.ZDP_ZCODE_ROOT ?? path.dirname(process.execPath);
 const zcodeVersion = process.env.ZDP_ZCODE_VERSION ?? app.getVersion();
 const logger = new JsonLogger(path.join(paths.logs, "host.jsonl"), "host");
+const servicePortBroker = new DesktopServicePortBroker(logger.child("desktop-service"));
+servicePortBroker.install();
 const renderers = new Set<WebContents>();
 let protocolStatus: HostState["health"]["protocol"] = "idle";
 let protocolError: string | undefined;
@@ -37,9 +40,8 @@ let shutdownStarted = false;
 let shutdownComplete = false;
 
 const taskService = new TaskService({
-  executable: process.execPath,
-  zcodeRoot,
-  resourcesPath: process.resourcesPath,
+  vendorAsar: path.join(process.resourcesPath, "zcode.original.asar"),
+  portBroker: servicePortBroker,
   logger,
   onHealth(status, error) {
     protocolStatus = status;
@@ -109,6 +111,10 @@ ipcMain.handle("zdp:invoke", async (event, request: unknown) => {
     case "host:getLogs": return logger.tail(200);
     case "host:choosePluginFolder": return chooseDirectory("Choose a ZCode Desktop Extension folder");
     case "host:chooseDirectory": return chooseDirectory("Choose a workspace folder");
+    case "extension:checkUpdates": await pluginManager.checkUpdates(); return hostState();
+    case "extension:queueUpdate": await pluginManager.queueUpdate(requireString(payload, "pluginId")); return hostState();
+    case "extension:cancelUpdate": await pluginManager.cancelQueuedUpdate(requireString(payload, "pluginId")); return hostState();
+    case "catalog:install": return pluginManager.installCatalog(requireString(payload, "pluginId"));
     case "plugin:install": return pluginManager.install(requireString(payload, "path"));
     case "plugin:setEnabled": {
       const value = requireRecord(payload);
@@ -181,7 +187,7 @@ app.on("before-quit", (event) => {
     await Promise.race([
       (async () => {
         await pluginManager.deactivateAll();
-        await taskService.shutdown(10_000);
+        await taskService.shutdown();
       })(),
       new Promise((resolve) => setTimeout(resolve, 10_000)),
     ]);
@@ -201,6 +207,7 @@ function hostState(): HostState {
     root,
     dataDir: paths.data,
     plugins: pluginManager.list(),
+    catalog: pluginManager.catalog(),
     health: {protocol: protocolStatus, ...(protocolError ? {protocolError} : {})},
   };
 }

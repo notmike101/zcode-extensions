@@ -27,6 +27,33 @@ export const pluginManifestSchema = z.object({
 
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
 
+export const extensionUpdateSourceSchema = z.object({
+  schemaVersion: z.literal(1),
+  manifestUrl: z.string().url(),
+}).strict();
+
+export type ExtensionUpdateSource = z.infer<typeof extensionUpdateSourceSchema>;
+
+export const extensionReleaseManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  id: z.string().regex(PLUGIN_ID_PATTERN),
+  apiVersion: z.literal(API_VERSION),
+  version: z.string().min(1),
+  engines: z.object({
+    host: z.string().min(1),
+    zcode: z.string().min(1),
+  }).strict(),
+  archive: z.object({
+    url: z.string().url(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+    size: z.number().int().positive().max(50 * 1024 * 1024),
+  }).strict(),
+  releaseUrl: z.string().url(),
+  publishedAt: z.string().datetime(),
+}).strict();
+
+export type ExtensionReleaseManifest = z.infer<typeof extensionReleaseManifestSchema>;
+
 export const modelRefSchema = z.object({
   providerId: z.string().min(1),
   modelId: z.string().min(1),
@@ -38,6 +65,7 @@ export type ModelRef = z.infer<typeof modelRefSchema>;
 export const taskSpecSchema = z.object({
   workspacePath: z.string().min(1),
   prompt: z.string().min(1),
+  title: z.string().min(1).max(120).optional(),
   mode: z.enum(["plan", "build", "edit", "yolo"]).default("plan"),
   model: modelRefSchema.optional(),
   thoughtLevel: z.string().min(1).optional(),
@@ -76,6 +104,30 @@ export type PluginStatus = {
   error?: string;
   rendererUrl?: string;
   generation: number;
+  update: ExtensionUpdateStatus;
+};
+
+export type ExtensionUpdateStatus = {
+  state: "unknown" | "checking" | "up-to-date" | "available" | "incompatible" | "queued" | "error";
+  currentVersion: string;
+  latestVersion?: string;
+  releaseUrl?: string;
+  checkedAt?: string;
+  queuedVersion?: string;
+  error?: string;
+};
+
+export type CatalogExtensionStatus = {
+  id: string;
+  name: string;
+  description: string;
+  repositoryUrl: string;
+  installed: boolean;
+  currentVersion?: string;
+  latestVersion?: string;
+  releaseUrl?: string;
+  state: "unknown" | "checking" | "available" | "installed" | "incompatible" | "error";
+  error?: string;
 };
 
 export type HostState = {
@@ -85,6 +137,7 @@ export type HostState = {
   root: string;
   dataDir: string;
   plugins: PluginStatus[];
+  catalog: CatalogExtensionStatus[];
   health: {
     protocol: "idle" | "starting" | "ready" | "error";
     protocolError?: string;
