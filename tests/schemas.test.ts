@@ -1,6 +1,10 @@
 import {describe, expect, test} from "bun:test";
-import {pluginManifestSchema, taskSpecSchema} from "../src/shared/schemas.ts";
-import {editableJobSchema, jobSchema} from "../plugins/scheduler/src/schemas.ts";
+import {
+  extensionReleaseManifestSchema,
+  extensionUpdateSourceSchema,
+  pluginManifestSchema,
+  taskSpecSchema,
+} from "../src/shared/schemas.ts";
 
 describe("public schemas", () => {
   test("accepts a desktop extension manifest", () => {
@@ -18,46 +22,29 @@ describe("public schemas", () => {
     expect(() => pluginManifestSchema.parse({apiVersion: 1, id: "bad", name: "Bad", version: "1", entrypoints: {}})).toThrow();
   });
 
-  test("task spec defaults to plan mode", () => {
-    expect(taskSpecSchema.parse({workspacePath: "D:\\project", prompt: "Review it"}).mode).toBe("plan");
+  test("task spec defaults to plan mode and accepts a native sidebar title", () => {
+    expect(taskSpecSchema.parse({workspacePath: "D:\\project", prompt: "Review it", title: "⏰ Morning review"}))
+      .toMatchObject({mode: "plan", title: "⏰ Morning review"});
   });
 
-  test("job contract constrains parallelism and missed policy", () => {
-    const base = {
-      schemaVersion: 1 as const,
-      id: "b87724c4-cfb2-46af-9b57-02d10dc31401",
-      name: "Daily",
-      enabled: true,
-      cron: "0 9 * * *",
-      timezone: "UTC",
-      workspacePath: "D:\\project",
-      prompt: "Review",
-      mode: "plan" as const,
-      overlapPolicy: "parallel" as const,
-      maxParallel: 5,
-      missedPolicy: "skip" as const,
-      graceMs: 60_000,
-      createdAt: "2026-07-19T00:00:00.000Z",
-      updatedAt: "2026-07-19T00:00:00.000Z",
-    };
-    expect(() => jobSchema.parse(base)).toThrow();
-    expect(jobSchema.parse({...base, maxParallel: 4}).maxParallel).toBe(4);
-  });
-
-  test("accepts an existing job id when editing", () => {
-    expect(editableJobSchema.parse({
-      id: "b87724c4-cfb2-46af-9b57-02d10dc31401",
-      name: "Daily",
-      enabled: true,
-      cron: "0 9 * * *",
-      timezone: "UTC",
-      workspacePath: "D:\\project",
-      prompt: "Review",
-      mode: "plan",
-      overlapPolicy: "skip",
-      maxParallel: 4,
-      missedPolicy: "skip",
-      graceMs: 60_000,
-    }).id).toBe("b87724c4-cfb2-46af-9b57-02d10dc31401");
+  test("accepts a checksum-verified extension release feed contract", () => {
+    expect(extensionUpdateSourceSchema.parse({
+      schemaVersion: 1,
+      manifestUrl: "https://example.com/extension-update.json",
+    }).manifestUrl).toBe("https://example.com/extension-update.json");
+    expect(extensionReleaseManifestSchema.parse({
+      schemaVersion: 1,
+      id: "scheduler",
+      apiVersion: 1,
+      version: "0.1.3",
+      engines: {host: ">=0.2.0 <1", zcode: ">=3.3.6"},
+      archive: {
+        url: "https://example.com/scheduler.zip",
+        sha256: "a".repeat(64),
+        size: 1024,
+      },
+      releaseUrl: "https://example.com/releases/v0.1.3",
+      publishedAt: "2026-07-19T12:00:00.000Z",
+    })).toMatchObject({id: "scheduler", version: "0.1.3"});
   });
 });

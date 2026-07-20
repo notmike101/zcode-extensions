@@ -9,7 +9,7 @@
 
 ZCode Desktop Extensions is an external, installable extension host for the ZCode Electron desktop application. It adds an **Extensions** entry directly below **Skills**, keeps extension code and state outside the ZCode installation, and survives ZCode updates by reapplying a small fail-open loader around the untouched vendor application.
 
-The project currently includes a Scheduler extension for running normal ZCode tasks on timezone-aware cron schedules while ZCode remains open.
+The official [Scheduler extension](https://github.com/notmike101/zcode-scheduler) is versioned and released separately. It can be installed from the host's extension catalog.
 
 This is an independent community project and is not affiliated with or endorsed by ZCode.
 
@@ -17,9 +17,10 @@ This is an independent community project and is not affiliated with or endorsed 
 
 - An update-resistant Electron loader that preserves the original ZCode `app.asar`.
 - A separate extension host with install, enable, disable, reload, and recoverable uninstall operations.
+- A checksum-verified extension catalog and updater with next-launch installation and activation-failure rollback.
 - Main-process and renderer extension entrypoints with namespaced IPC and lifecycle cleanup.
 - A typed extension SDK and a complete [extension-development guide](docs/extension-development.md).
-- The built-in Scheduler extension with cron, timezone, overlap, model, permission-mode, and run-history controls.
+- A native desktop task bridge so extension-created work appears as ordinary persistent ZCode tasks.
 - A guardian that detects updater-provided ZCode application bundles and reapplies the loader after ZCode exits.
 - Doctor, repair, safe-mode, launch, and uninstall commands.
 
@@ -39,7 +40,7 @@ Release executables are currently unsigned. Windows SmartScreen may warn before 
 3. Verify the archive:
 
    ```powershell
-   $zip = ".\zcode-extensions-v0.1.2-windows-x64.zip"
+   $zip = ".\zcode-extensions-v0.2.0-windows-x64.zip"
    $expected = (Get-Content "$zip.sha256").Split()[0].ToLowerInvariant()
    $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
    if ($actual -ne $expected) { throw "Checksum mismatch" }
@@ -48,7 +49,7 @@ Release executables are currently unsigned. Windows SmartScreen may warn before 
 4. Extract the archive to a permanent location. The ZIP contains a stable `zcode-extensions` directory:
 
    ```powershell
-   Expand-Archive .\zcode-extensions-v0.1.2-windows-x64.zip -DestinationPath D:\
+   Expand-Archive .\zcode-extensions-v0.2.0-windows-x64.zip -DestinationPath D:\
    Set-Location D:\zcode-extensions
    ```
 
@@ -67,15 +68,16 @@ For a non-default ZCode installation, append `--zcode "D:\Path\To\ZCode"` to com
 
 Open **Extensions** in ZCode's normal navigation, directly below **Skills**.
 
-- **Installed** lists extensions and provides install, enable/disable, reload, and uninstall actions.
-- **Health** shows the loader, extension host, ZCode task protocol, data paths, and recent logs.
-- Extension-provided pages, including **Scheduler**, appear beneath the host pages.
+- **Installed** lists extensions, checks for updates, and provides install, enable/disable, reload, and uninstall actions.
+- **Available** lists official extensions such as Scheduler and installs checksum-verified release bundles.
+- **Health** shows the loader, extension host, native ZCode task service, data paths, and recent logs.
+- Extension-provided pages appear beneath the host pages after installation.
 
 To install a third-party extension, choose **Install extension** and select a folder containing a valid `.zdp\plugin.json` manifest and its built entrypoints. Extensions are trusted local code with the same file and process access as the host; install only code you trust.
 
 ## Scheduler
 
-Open **Extensions → Scheduler → New job**. Each job supports:
+Install Scheduler from **Extensions → Available**, restart ZCode, then open **Extensions → Scheduler → New job**. Each job supports:
 
 - A standard five-field cron expression: minute, hour, day of month, month, and day of week.
 - An IANA timezone such as `America/Chicago`.
@@ -89,14 +91,23 @@ Scheduler behavior is application-scoped:
 - ZCode must remain open at the scheduled time.
 - Missed runs are skipped instead of replayed after restart or resume.
 - It uses Electron timers and IANA timezones, not Windows Task Scheduler.
-- Runs use ZCode's app-server protocol. Scheduler History is the authoritative run list.
+- Every run is a normal persistent ZCode task named `⏰ Job name`; it appears immediately in the standard sidebar, can be opened while running, remains after completion, and archives normally.
+- Scheduler History retains scheduling-specific status and timing alongside the native task.
+
+Scheduler source, releases, and issue tracking live in the separate [zcode-scheduler repository](https://github.com/notmike101/zcode-scheduler).
+
+## Updating extensions
+
+The host checks official and extension-declared update feeds at startup, every six hours, and whenever **Check for updates** is selected. Selecting **Install update** downloads the ZIP over HTTPS, validates its declared size and SHA-256 checksum, checks compatibility and bundle paths, and queues it for the next launch. Extension data under `data\plugin-data` is not part of the bundle and is preserved.
+
+Queued updates replace only the extension bundle on startup. The previous bundle moves to recoverable trash; if an enabled extension fails to activate, the host rolls back automatically. Updates never modify ZCode's vendor ASAR.
 
 ## Updating ZCode Desktop Extensions
 
 Close ZCode, download the new release, and extract it over the same parent directory:
 
 ```powershell
-Expand-Archive .\zcode-extensions-v0.1.3-windows-x64.zip -DestinationPath D:\ -Force
+Expand-Archive .\zcode-extensions-v0.2.0-windows-x64.zip -DestinationPath D:\ -Force
 Set-Location D:\zcode-extensions
 .\bin\zdp.exe repair
 .\bin\zdp.exe launch
@@ -130,19 +141,20 @@ Install, repair, and uninstall refuse to run while ZCode is open. The installer 
 4. The loader starts the external extension host and imports the untouched vendor ASAR.
 5. A guardian watches for an updater-provided `app.asar` after ZCode exits, backs it up, and reapplies the loader.
 
-If the extension host fails, the loader records the error and still attempts to open the vendor application. This design is update-resistant, not update-proof: ZCode can change Electron behavior, navigation markup, fuses, or its private task protocol.
+If the extension host fails, the loader records the error and still attempts to open the vendor application. This design is update-resistant, not update-proof: ZCode can change Electron behavior, navigation markup, fuses, or its private desktop service APIs.
 
 ## Files and data
 
 | Path | Contents |
 | --- | --- |
 | `bin` | Generated CLI and launcher executables. Release assets only; never committed. |
-| `runtime` | Generated versioned host, renderer, and built-in extension bundles. |
+| `runtime` | Generated versioned host and renderer bundles. |
 | `data\plugins` | Installed extension bundles. The plugin-named path is retained for API compatibility. |
 | `data\plugin-data\<id>` | Private persistent data for each extension. |
 | `data\logs` | Loader and host JSONL logs with bounded rotation. |
 | `data\backups` | The three newest hash-identified ZCode vendor backups. |
 | `data\.trash` | Recoverable extension bundles removed or superseded during upgrades. |
+| `data\.staging` | Verified extension updates waiting for the next launch. |
 
 Scheduler jobs live in `data\plugin-data\scheduler\jobs.json` and history in `history.jsonl`.
 
@@ -164,7 +176,7 @@ bun run typecheck
 bun test
 bun run build:example
 bun run build
-bun run release:package -- --tag v0.1.2
+bun run release:package -- --tag v0.2.0
 ```
 
 See [Developing extensions](docs/extension-development.md) for the public API and [Hello Extension](examples/hello-extension) for a complete minimal project.

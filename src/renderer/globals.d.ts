@@ -10,8 +10,3 @@ declare global {
     __zdpHostState?: HostState;
   }
 }
-
-declare module "*.css" {
-  const content: string;
-  export default content;
-}

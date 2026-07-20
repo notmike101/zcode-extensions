@@ -26,6 +26,7 @@ export type ExtensionModelRef = {
 export type ExtensionTaskSpec = {
   workspacePath: string;
   prompt: string;
+  title?: string;
   mode: "plan" | "build" | "edit" | "yolo";
   model?: ExtensionModelRef;
   thoughtLevel?: string;
@@ -92,6 +93,11 @@ export type ExtensionContext = {
     readWorkspaceState: (workspacePath: string) => Promise<unknown>;
     tasks: {
       run: (spec: ExtensionTaskSpec) => Promise<ExtensionTaskRunHandle>;
+      ensureVisible: (spec: {
+        sessionId: string;
+        workspacePath: string;
+        title?: string;
+      }) => Promise<void>;
     };
   };
 };
