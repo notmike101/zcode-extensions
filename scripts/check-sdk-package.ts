@@ -11,7 +11,7 @@ const packageJson = JSON.parse(await readFile(path.join(sdk, "package.json"), "u
   exports: Record<string, unknown>;
 };
 
-if (packageJson.name !== "@notmike101/zcode-extension-sdk" || packageJson.version !== "0.3.1") {
+if (packageJson.name !== "@notmike101/zcode-extension-sdk" || packageJson.version !== "0.3.2") {
   throw new Error("Unexpected SDK package identity");
 }
 for (const entry of [".", "./main", "./renderer", "./experimental", "./manifest.schema.json"]) {
