@@ -1,4 +1,4 @@
-import type * as Sdk from "./index";
+import type * as Sdk from "./index.js";
 
 export const ZCODE_EXTENSION_API_VERSION = 1 as const;
 
@@ -34,4 +34,4 @@ export type {
   ZCodeTaskSummary,
   ZCodeWorkspaceDefaults,
   ZCodeWorkspaceTarget,
-} from "./index";
+} from "./index.js";
