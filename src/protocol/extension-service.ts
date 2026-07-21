@@ -9,6 +9,7 @@ import type {
   ModelRequestHistory,
   ModelRequestRecord,
   ModelTokenUsage,
+  ZCodeMessage,
   ZCodeSessionEvent,
   ZCodeStreamEnvelope,
   ZCodeSubscriptionTarget,
@@ -171,7 +172,7 @@ export class ExtensionZCodeService {
       }
       case "sessions.list": return this.#serviceCall(manifest, "zcode.sessions.read", "zcode-session", "listSessions", payload);
       case "sessions.read": return this.#serviceCall(manifest, "zcode.sessions.read", "zcode-session", "readSession", payload);
-      case "sessions.readMessages": return this.#serviceCall(manifest, "zcode.sessions.read", "zcode-session", "readSessionMessages", payload);
+      case "sessions.readMessages": return this.#readSessionMessages(manifest, payload) as Promise<T>;
       case "sessions.readEvents": return this.#serviceCall(manifest, "zcode.sessions.read", "zcode-session", "readSessionEvents", payload);
       case "sessions.create": return this.#serviceCall(manifest, "zcode.sessions.write", "zcode-session", "createSession", payload);
       case "sessions.resume": return this.#serviceCall(manifest, "zcode.sessions.write", "zcode-session", "resumeSession", payload);
@@ -329,6 +330,30 @@ export class ExtensionZCodeService {
     };
   }
 
+  async #readSessionMessages(manifest: ExtensionManifest, payload: unknown): Promise<ZCodeMessage[]> {
+    const value = requiredRecord(payload);
+    const workspacePath = requiredString(value, "workspacePath");
+    const sessionId = requiredString(value, "sessionId");
+    const workspaceIdentity = string(value.workspaceIdentity);
+    const limit = optionalPositiveInteger(value.limit);
+    const snapshot = requiredRecord(await this.#serviceCall(manifest, "zcode.sessions.read", "zcode-session", "readSession", {
+      workspacePath,
+      ...(workspaceIdentity ? {workspaceIdentity} : {}),
+      sessionId,
+      ...(limit ? {messageLimit: limit} : {}),
+    }));
+    const messages = (Array.isArray(snapshot.messages) ? snapshot.messages : [])
+      .map(normalizeZCodeMessage)
+      .filter((message): message is ZCodeMessage => Boolean(message));
+    const afterMessageId = string(value.afterMessageId);
+    if (afterMessageId) {
+      const index = messages.findIndex((message) => message.messageId === afterMessageId || message.id === afterMessageId);
+      const remaining = index >= 0 ? messages.slice(index + 1) : messages;
+      return limit ? remaining.slice(0, limit) : remaining;
+    }
+    return limit ? messages.slice(-limit) : messages;
+  }
+
   #resolveSessionTarget(sessionId: string): {workspacePath: string; workspaceIdentity?: string; sessionId: string} | undefined {
     const dataRoot = process.env.ZCODE_DATA_BASE_DIR?.trim() || process.env.HOME?.trim() || homedir();
     const databasePath = path.join(dataRoot, ".zcode", "v2", "tasks-index.sqlite");
@@ -459,6 +484,32 @@ function sanitizeModelRequest(sessionId: string, value: unknown): ModelRequestRe
     usage: tokenUsage(response.usage ?? source.usage),
     finishReason: string(response.finishReason) ?? string(source.finishReason),
     ...(status === "failed" ? {error: {name: string(error.name)}} : {}),
+  };
+}
+
+export function normalizeZCodeMessage(value: unknown): ZCodeMessage | undefined {
+  const source = record(value);
+  const info = record(source.info);
+  const time = record(info.time ?? source.time);
+  const messageId = string(source.messageId ?? source.id ?? info.messageId ?? info.id);
+  if (!messageId) return undefined;
+  const sessionId = string(source.sessionId ?? info.sessionId ?? info.sessionID);
+  const role = string(source.role ?? info.role);
+  const turnId = string(source.turnId ?? info.turnId);
+  const parentMessageId = string(source.parentMessageId ?? info.parentMessageId ?? info.parentID);
+  const createdAt = string(source.createdAt ?? time.created) ?? number(source.createdAt ?? time.created);
+  const completedAt = string(source.completedAt ?? time.completed) ?? number(source.completedAt ?? time.completed);
+  return {
+    ...source,
+    info,
+    messageId,
+    id: messageId,
+    sessionId,
+    role,
+    turnId,
+    parentMessageId,
+    createdAt,
+    completedAt,
   };
 }
 

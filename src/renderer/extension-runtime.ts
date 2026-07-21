@@ -559,9 +559,16 @@ function insertContribution(target: Element, host: HTMLElement, placement: Contr
 }
 
 function contextFrom(target: Element): ActiveUiContext {
-  const closest = (attribute: string) => target.closest<HTMLElement>(`[${attribute}]`)?.getAttribute(attribute)
+  const nearest = (attribute: string) => target.closest<HTMLElement>(`[${attribute}]`)?.getAttribute(attribute) ?? undefined;
+  const closest = (attribute: string) => nearest(attribute)
     ?? document.querySelector<HTMLElement>(`[${attribute}]`)?.getAttribute(attribute)
     ?? undefined;
+  const messageElement = target.matches("[data-message-id][data-role]")
+    ? target as HTMLElement
+    : target.matches("[data-chat-turn-group-shell]")
+      ? target.querySelector<HTMLElement>('[data-message-id][data-role="assistant"]')
+        ?? target.querySelector<HTMLElement>("[data-message-id][data-role]")
+      : undefined;
   const taskItemKey = closest("data-task-item-key");
   const taskItemId = taskItemKey && taskItemKey.includes(":")
     ? taskItemKey.slice(taskItemKey.lastIndexOf(":") + 1)
@@ -571,9 +578,13 @@ function contextFrom(target: Element): ActiveUiContext {
     workspaceIdentity: closest("data-workspace-identity"),
     taskId: closest("data-task-id") ?? taskItemId,
     sessionId: closest("data-session-id"),
-    turnId: closest("data-anchor-turn-id") ?? closest("data-turn-id"),
-    messageId: closest("data-message-id") ?? closest("data-anchor-assistant-message-id"),
-    role: closest("data-role"),
+    turnId: nearest("data-anchor-turn-id") ?? nearest("data-turn-id")
+      ?? messageElement?.getAttribute("data-anchor-turn-id") ?? messageElement?.getAttribute("data-turn-id")
+      ?? closest("data-anchor-turn-id") ?? closest("data-turn-id"),
+    messageId: nearest("data-anchor-assistant-message-id")
+      ?? messageElement?.getAttribute("data-message-id")
+      ?? closest("data-message-id") ?? closest("data-anchor-assistant-message-id"),
+    role: messageElement?.getAttribute("data-role") ?? closest("data-role"),
     runtimeStatus: closest("data-runtime-status"),
     toolCallId: closest("data-tool-call-id"),
   };

@@ -3,6 +3,7 @@ import type {ExtensionManifest} from "../sdk/index.ts";
 import {
   ExtensionZCodeService,
   normalizeModelRequestEvent,
+  normalizeZCodeMessage,
   normalizeSessionEvent,
 } from "../src/protocol/extension-service.ts";
 
@@ -144,6 +145,40 @@ describe("extension ZCode service", () => {
       "readWorkspaceState", "goalSession", "getTaskSnapshot", "setTaskPinned:true",
       "branchTaskFromPrompt", "generateWorkspaceText", "listMcpServerStatuses",
     ]);
+  });
+
+  test("reads normalized messages through the 3.3.6 session snapshot compatibility path", async () => {
+    const calls: unknown[] = [];
+    const session = {
+      async readSession(payload: unknown) {
+        calls.push(payload);
+        return {messages: [
+          {info: {messageId: "message-1", sessionId: "session-1", role: "user", time: {created: 10}}, parts: []},
+          {info: {id: "message-2", sessionID: "session-1", role: "assistant", parentID: "message-1", time: {created: 20, completed: 30}}, parts: []},
+          {info: {messageId: "message-3", sessionId: "session-1", role: "assistant", time: {created: 40}}, parts: []},
+        ]};
+      },
+      async readSessionMessages() {
+        throw new Error("The incompatible 3.3.6 method must not be called");
+      },
+    };
+    const service = createService({}, {
+      async service(name: string) { return name === "zcode-session" ? session : {}; },
+    });
+    const messages = await service.invoke<Array<Record<string, unknown>>>(
+      manifest(["zcode.sessions.read"]),
+      "sessions.readMessages",
+      {workspacePath: "D:\\project", sessionId: "session-1", afterMessageId: "message-1", limit: 2},
+    );
+    expect(calls).toEqual([{workspacePath: "D:\\project", sessionId: "session-1", messageLimit: 2}]);
+    expect(messages).toEqual([
+      expect.objectContaining({
+        messageId: "message-2", id: "message-2", sessionId: "session-1", role: "assistant",
+        parentMessageId: "message-1", createdAt: 20, completedAt: 30,
+      }),
+      expect.objectContaining({messageId: "message-3", id: "message-3", createdAt: 40}),
+    ]);
+    expect(normalizeZCodeMessage({info: {}, parts: []})).toBeUndefined();
   });
 
   test("normalizes task, workspace, and broadcast streams without discarding raw envelopes", () => {
