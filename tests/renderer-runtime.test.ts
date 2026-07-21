@@ -1,6 +1,6 @@
 import {afterEach, beforeEach, describe, expect, test} from "bun:test";
 import {Window} from "happy-dom";
-import type {ExtensionHostCapabilities, ExtensionManifest, RendererExtension} from "../sdk/index.ts";
+import type {ActiveUiContext, ExtensionHostCapabilities, ExtensionManifest, RendererExtension} from "../sdk/index.ts";
 import type {PluginStatus} from "../src/shared/schemas.ts";
 import type {ZdpBridge} from "../src/renderer/globals.d.ts";
 import {RendererExtensionRuntime} from "../src/renderer/extension-runtime.ts";
@@ -113,6 +113,37 @@ describe("renderer extension runtime", () => {
     restricted.sync([status(1, true, [])]);
     await expect(restricted.mountPage("runtime-test", "dashboard", container as never))
       .rejects.toThrow("ui.pages");
+  });
+
+  test("supplies the assistant descendant as context for a real ZCode turn shell without turn ids", async () => {
+    const runtime = new RendererExtensionRuntime(createBridge(["ui.chat"]).value);
+    let mountedContext: ActiveUiContext | undefined;
+    runtime.register({
+      id: "runtime-test",
+      activate(context) {
+        context.ui.contribute("chat.turn.after", (_container, active) => {
+          mountedContext = active;
+        });
+      },
+    });
+    runtime.sync([status(1, true, ["ui.chat"])]);
+    const root = window.document.getElementById("root")!;
+    root.innerHTML = `<main data-testid="chat-view" data-session-id="session-1">
+      <section data-chat-turn-group-shell="true">
+        <article data-message-id="user-message" data-role="user"></article>
+        <article data-message-id="assistant-message" data-role="assistant"></article>
+      </section>
+    </main>`;
+    runtime.refreshUi();
+    await settle();
+
+    expect(mountedContext).toMatchObject({
+      sessionId: "session-1",
+      messageId: "assistant-message",
+      role: "assistant",
+    });
+    expect(mountedContext?.turnId).toBeUndefined();
+    await runtime.dispose();
   });
 });
 

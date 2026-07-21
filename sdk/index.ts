@@ -440,9 +440,14 @@ export type ZCodeSessionSummary = Record<string, unknown> & {
 export type ZCodeMessage = Record<string, unknown> & {
   messageId?: string;
   id?: string;
+  sessionId?: string;
   role?: string;
   turnId?: string;
   createdAt?: string | number;
+  completedAt?: string | number;
+  parentMessageId?: string;
+  info?: Record<string, unknown>;
+  parts?: unknown[];
 };
 
 export type ZCodeTaskSummary = Record<string, unknown> & {
