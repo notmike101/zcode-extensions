@@ -5,6 +5,7 @@ import {
   pluginManifestSchema,
   taskSpecSchema,
 } from "../src/shared/schemas.ts";
+import {assertExtensionManifest, validateExtensionManifest} from "../sdk/index.ts";
 
 describe("public schemas", () => {
   test("accepts a desktop extension manifest", () => {
@@ -15,6 +16,51 @@ describe("public schemas", () => {
       version: "1.0.0",
       entrypoints: {main: "dist/main.cjs"},
     }).engines.host).toBe(">=0.1.0");
+  });
+
+  test("accepts declared capabilities while retaining legacy manifests", () => {
+    const declared = pluginManifestSchema.parse({
+      apiVersion: 1,
+      id: "telemetry",
+      name: "Telemetry",
+      version: "1.0.0",
+      entrypoints: {renderer: "dist/renderer.js"},
+      capabilities: ["zcode.usage.read", "zcode.sessions.events", "ui.chat"],
+    });
+    expect(declared.capabilities).toEqual(["zcode.usage.read", "zcode.sessions.events", "ui.chat"]);
+    const legacy = pluginManifestSchema.parse({
+      apiVersion: 1,
+      id: "legacy",
+      name: "Legacy",
+      version: "1.0.0",
+      entrypoints: {main: "dist/main.cjs"},
+    });
+    expect(legacy.capabilities).toBeUndefined();
+    expect(() => pluginManifestSchema.parse({...declared, capabilities: ["zcode.everything"]})).toThrow();
+    expect(() => pluginManifestSchema.parse({...declared, capabilities: ["zcode.usage.read", "zcode.usage.read"]})).toThrow("Capabilities must be unique");
+  });
+
+  test("ships a browser-safe manifest validator with host-compatible defaults", () => {
+    const result = validateExtensionManifest({
+      apiVersion: 1,
+      id: "usage-panel",
+      name: "Usage Panel",
+      version: "0.1.0",
+      entrypoints: {renderer: "dist/renderer.js"},
+      capabilities: ["zcode.usage.read", "ui.pages"],
+    });
+    expect(result).toMatchObject({
+      success: true,
+      manifest: {engines: {host: ">=0.1.0", zcode: ">=3.3.6"}, pages: []},
+    });
+    expect(() => assertExtensionManifest({
+      apiVersion: 1,
+      id: "usage-panel",
+      name: "Usage Panel",
+      version: "0.1.0",
+      entrypoints: {renderer: "../renderer.js"},
+      capabilities: ["zcode.usage.read", "zcode.usage.read"],
+    })).toThrow("Entrypoints must be relative");
   });
 
   test("rejects entrypoint traversal and empty extensions", () => {

@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": [],
+    "skipLibCheck": true,
+    "baseUrl": "../../..",
+    "paths": {
+      "@notmike101/zcode-extension-sdk": ["sdk/dist/types/index.d.ts"],
+      "@notmike101/zcode-extension-sdk/main": ["sdk/dist/types/main.d.ts"],
+      "@notmike101/zcode-extension-sdk/renderer": ["sdk/dist/types/renderer.d.ts"],
+      "@notmike101/zcode-extension-sdk/experimental": ["sdk/dist/types/experimental.d.ts"]
+    }
+  },
+  "files": ["index.ts"]
+}

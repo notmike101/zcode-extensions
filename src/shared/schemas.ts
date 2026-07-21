@@ -1,5 +1,6 @@
 import {z} from "zod";
 import {API_VERSION, INSTALL_STATE_VERSION, PLUGIN_ID_PATTERN} from "./constants.ts";
+import {EXTENSION_CAPABILITIES} from "../../sdk/index.ts";
 
 const entryPath = z.string().min(1).refine((value) => !value.includes("..") && !/^[\\/]/.test(value), {
   message: "Entrypoints must be relative paths contained by the extension",
@@ -23,6 +24,10 @@ export const pluginManifestSchema = z.object({
     id: z.string().regex(PLUGIN_ID_PATTERN),
     title: z.string().min(1).max(40),
   })).default([]),
+  capabilities: z.array(z.enum(EXTENSION_CAPABILITIES))
+    .max(EXTENSION_CAPABILITIES.length)
+    .refine((capabilities) => new Set(capabilities).size === capabilities.length, "Capabilities must be unique")
+    .optional(),
 }).strict();
 
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;

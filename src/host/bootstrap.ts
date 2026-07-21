@@ -9,6 +9,8 @@ import {JsonLogger} from "../shared/logger.ts";
 import type {HostState} from "../shared/schemas.ts";
 import {DesktopServicePortBroker} from "../protocol/desktop-service.ts";
 import {TaskService} from "../protocol/task-service.ts";
+import {ZCodeGateway} from "../protocol/zcode-gateway.ts";
+import {ExtensionZCodeService} from "../protocol/extension-service.ts";
 import {PluginManager} from "./plugin-manager.ts";
 
 protocol.registerSchemesAsPrivileged([{
@@ -39,7 +41,7 @@ let initialized: Promise<void>;
 let shutdownStarted = false;
 let shutdownComplete = false;
 
-const taskService = new TaskService({
+const zcodeGateway = new ZCodeGateway({
   vendorAsar: path.join(process.resourcesPath, "zcode.original.asar"),
   portBroker: servicePortBroker,
   logger,
@@ -49,6 +51,8 @@ const taskService = new TaskService({
     emit("host-state-changed");
   },
 });
+const taskService = new TaskService({gateway: zcodeGateway, logger});
+const zcodeService = new ExtensionZCodeService({gateway: zcodeGateway, taskService, hostVersion: HOST_VERSION, zcodeVersion});
 
 function emit(event: string, payload?: unknown): void {
   for (const contents of [...renderers]) {
@@ -63,6 +67,7 @@ pluginManager = new PluginManager({
   zcodeVersion,
   logger,
   taskService,
+  zcodeService,
   emit,
   onResume(handler) {
     powerMonitor.on("resume", handler);
@@ -115,7 +120,9 @@ ipcMain.handle("zdp:invoke", async (event, request: unknown) => {
     case "extension:queueUpdate": await pluginManager.queueUpdate(requireString(payload, "pluginId")); return hostState();
     case "extension:cancelUpdate": await pluginManager.cancelQueuedUpdate(requireString(payload, "pluginId")); return hostState();
     case "catalog:install": return pluginManager.installCatalog(requireString(payload, "pluginId"));
+    case "catalog:inspect": return pluginManager.inspectCatalog(requireString(payload, "pluginId"));
     case "plugin:install": return pluginManager.install(requireString(payload, "path"));
+    case "plugin:inspect": return pluginManager.inspect(requireString(payload, "path"));
     case "plugin:setEnabled": {
       const value = requireRecord(payload);
       await pluginManager.setEnabled(requireString(value, "pluginId"), Boolean(value.enabled));
@@ -126,6 +133,20 @@ ipcMain.handle("zdp:invoke", async (event, request: unknown) => {
     case "plugin:invoke": {
       const value = requireRecord(payload);
       return pluginManager.invoke(requireString(value, "pluginId"), requireString(value, "method"), value.payload);
+    }
+    case "plugin:capabilities": return pluginManager.capabilities(requireString(payload, "pluginId"));
+    case "plugin:zcode:invoke": {
+      const value = requireRecord(payload);
+      return pluginManager.invokeZCode(requireString(value, "pluginId"), requireString(value, "operation"), value.payload);
+    }
+    case "plugin:zcode:subscribe": {
+      const value = requireRecord(payload);
+      return pluginManager.subscribeZCode(requireString(value, "pluginId"), requireString(value, "stream"), value.payload);
+    }
+    case "plugin:zcode:unsubscribe": {
+      const value = requireRecord(payload);
+      pluginManager.unsubscribeZCode(requireString(value, "pluginId"), requireString(value, "subscriptionId"));
+      return undefined;
     }
     default: throw new Error(`Unknown ZDP method: ${method}`);
   }
@@ -188,6 +209,7 @@ app.on("before-quit", (event) => {
       (async () => {
         await pluginManager.deactivateAll();
         await taskService.shutdown();
+        await zcodeGateway.shutdown();
       })(),
       new Promise((resolve) => setTimeout(resolve, 10_000)),
     ]);

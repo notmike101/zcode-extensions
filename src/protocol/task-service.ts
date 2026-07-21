@@ -9,6 +9,7 @@ import type {
   DesktopServicePortBroker,
   Disposable,
 } from "./desktop-service.ts";
+import {ZCodeGateway} from "./zcode-gateway.ts";
 
 export type TaskResultStatus = "succeeded" | "failed" | "cancelled" | "timed_out" | "lost" | "needs_attention";
 
@@ -31,8 +32,9 @@ export type VisibleTaskSpec = {
 };
 
 type TaskServiceOptions = {
-  vendorAsar: string;
-  portBroker: Pick<DesktopServicePortBroker, "current" | "onChange" | "waitForPort" | "dispose">;
+  gateway?: Pick<ZCodeGateway, "service" | "subscribe" | "on" | "removeListener">;
+  vendorAsar?: string;
+  portBroker?: Pick<DesktopServicePortBroker, "current" | "onChange" | "waitForPort" | "dispose">;
   logger: JsonLogger;
   onHealth?: (status: "idle" | "starting" | "ready" | "error", error?: string) => void;
   connect?: (port: DesktopServicePort["port"], vendorAsar: string) => Promise<DesktopServiceConnection>;
@@ -80,16 +82,30 @@ type ActiveRun = {
 export class TaskService extends EventEmitter {
   readonly #options: TaskServiceOptions;
   readonly #runs = new Map<string, ActiveRun>();
-  readonly #portSubscription: {dispose: () => void};
-  #connection?: DesktopServiceConnection;
-  #connecting?: Promise<DesktopServiceConnection>;
-  #port?: DesktopServicePort;
+  readonly #gateway: Pick<ZCodeGateway, "service" | "subscribe" | "on" | "removeListener">;
+  readonly #ownedGateway?: ZCodeGateway;
+  readonly #disconnected = () => {
+    for (const run of [...this.#runs.values()]) {
+      run.finish({sessionId: run.sessionId, status: "lost", error: "The ZCode desktop service host exited"});
+    }
+  };
 
   constructor(options: TaskServiceOptions) {
     super();
     this.#options = options;
-    this.#port = options.portBroker.current();
-    this.#portSubscription = options.portBroker.onChange((entry) => this.#onPortChanged(entry));
+    if (options.gateway) this.#gateway = options.gateway;
+    else {
+      if (!options.vendorAsar || !options.portBroker) throw new Error("TaskService requires a shared gateway or legacy port options");
+      this.#ownedGateway = new ZCodeGateway({
+        vendorAsar: options.vendorAsar,
+        portBroker: options.portBroker,
+        logger: options.logger,
+        onHealth: options.onHealth,
+        connect: options.connect,
+      });
+      this.#gateway = this.#ownedGateway;
+    }
+    this.#gateway.on("disconnected", this.#disconnected);
   }
 
   async readWorkspaceState(workspacePath: string): Promise<unknown> {
@@ -143,12 +159,12 @@ export class TaskService extends EventEmitter {
     const completion = new Promise<TaskResult>((resolve) => { resolveCompletion = resolve; });
     let settled = false;
 
-    const event = session.onDynamicSessionEvent({
+    const subscriptionTarget = {
       ...target,
       sessionId,
       deliveryKind: "desktop-continuous",
       includeSnapshot: true,
-    });
+    };
     const run = {} as ActiveRun;
     const finish = (result: TaskResult) => {
       if (settled) return;
@@ -156,16 +172,11 @@ export class TaskService extends EventEmitter {
       this.#runs.delete(sessionId);
       run.subscription?.dispose();
       if (run.timeout) clearTimeout(run.timeout);
-      resolveCompletion(result);
-      if (run.title) void this.#rename(task, target, sessionId, run.title);
-      void this.#broadcastTaskChange(
-        run.broadcast,
-        run.target,
-        run.sessionId,
-        result.status === "failed" || result.status === "timed_out" || result.status === "lost" ? "error" : "completed",
-        result.error ? {error: result.error} : {},
-      );
-      this.emit("task-finished", result);
+      const finalization = result.status === "lost" ? Promise.resolve() : this.#finalizeTask(run, result);
+      void finalization.finally(() => {
+        resolveCompletion(result);
+        this.emit("task-finished", result);
+      });
     };
     Object.assign(run, {
       sessionId,
@@ -175,7 +186,12 @@ export class TaskService extends EventEmitter {
       broadcast,
       interactionBlocked: false,
       finish,
-      subscription: event((value) => this.#onSessionEvent(run, value)),
+      subscription: this.#gateway.subscribe(
+        "zcode-session",
+        "onDynamicSessionEvent",
+        subscriptionTarget,
+        (value) => this.#onSessionEvent(run, value),
+      ),
     } satisfies ActiveRun);
     this.#runs.set(sessionId, run);
 
@@ -204,7 +220,7 @@ export class TaskService extends EventEmitter {
 
     if (spec.timeoutMs) {
       run.timeout = setTimeout(() => {
-        void session.stopSession({...target, sessionId}).catch(() => undefined);
+        void this.#stopSession(target, sessionId);
         finish({sessionId, status: "timed_out", error: `Task exceeded ${spec.timeoutMs} ms`});
       }, spec.timeoutMs);
     }
@@ -215,69 +231,52 @@ export class TaskService extends EventEmitter {
       completion,
       stop: async () => {
         if (settled) return;
-        await session.stopSession({...target, sessionId}).catch(() => undefined);
+        await this.#stopSession(target, sessionId);
         finish({sessionId, status: "cancelled"});
       },
     };
   }
 
   async shutdown(): Promise<void> {
-    const connection = this.#connection;
-    if (connection) {
-      const session = connection.session as unknown as SessionService;
-      await Promise.all([...this.#runs.values()].map((run) =>
-        session.stopSession({...run.target, sessionId: run.sessionId}).catch(() => undefined),
-      ));
-    }
+    const session = await this.#gateway.service<SessionService & Record<string, unknown>>("zcode-session").catch(() => undefined);
+    if (session) await Promise.all([...this.#runs.values()].map((run) =>
+      session.stopSession({...run.target, sessionId: run.sessionId}).catch(() => undefined),
+    ));
     for (const run of [...this.#runs.values()]) run.finish({sessionId: run.sessionId, status: "cancelled"});
-    this.#portSubscription.dispose();
-    this.#connection?.dispose();
-    this.#connection = undefined;
-    this.#options.portBroker.dispose();
-    this.#options.onHealth?.("idle");
+    this.#gateway.removeListener("disconnected", this.#disconnected);
+    await this.#ownedGateway?.shutdown();
   }
 
   async #services(): Promise<{broadcast: BroadcastService; session: SessionService; task: TaskIndexService}> {
-    const connection = await this.#ensureConnection();
-    return {
-      broadcast: connection.broadcast as unknown as BroadcastService,
-      session: connection.session as unknown as SessionService,
-      task: connection.task as unknown as TaskIndexService,
-    };
+    const [broadcast, session, task] = await Promise.all([
+      this.#gateway.service<BroadcastService & Record<string, unknown>>("broadcast"),
+      this.#gateway.service<SessionService & Record<string, unknown>>("zcode-session"),
+      this.#gateway.service<TaskIndexService & Record<string, unknown>>("zcode-task"),
+    ]);
+    return {broadcast, session, task};
   }
 
-  async #ensureConnection(): Promise<DesktopServiceConnection> {
-    if (this.#connection) return this.#connection;
-    if (this.#connecting) return this.#connecting;
-    this.#options.onHealth?.("starting");
-    this.#connecting = (async () => {
-      const entry = this.#port ?? await this.#options.portBroker.waitForPort();
-      this.#port = entry;
-      const connection = await (this.#options.connect ?? connectDesktopServices)(entry.port, this.#options.vendorAsar);
-      this.#connection = connection;
-      this.#options.onHealth?.("ready");
-      return connection;
-    })().catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      this.#options.onHealth?.("error", message);
-      throw error;
-    }).finally(() => { this.#connecting = undefined; });
-    return this.#connecting;
+  async #stopSession(target: Record<string, unknown>, sessionId: string): Promise<void> {
+    const session = await this.#gateway.service<SessionService & Record<string, unknown>>("zcode-session").catch(() => undefined);
+    await session?.stopSession({...target, sessionId}).catch(() => undefined);
   }
 
-  #onPortChanged(entry: DesktopServicePort | undefined): void {
-    if (entry?.process === this.#port?.process) return;
-    this.#port = entry;
-    this.#connection?.dispose();
-    this.#connection = undefined;
-    this.#connecting = undefined;
-    if (!entry) {
-      for (const run of [...this.#runs.values()]) {
-        run.finish({sessionId: run.sessionId, status: "lost", error: "The ZCode desktop service host exited"});
-      }
-      this.#options.onHealth?.("error", "The ZCode desktop service host is unavailable");
-    } else {
-      this.#options.onHealth?.("starting");
+  async #finalizeTask(run: ActiveRun, result: TaskResult): Promise<void> {
+    try {
+      const {broadcast, task} = await this.#services();
+      if (run.title) await this.#rename(task, run.target, run.sessionId, run.title);
+      await this.#broadcastTaskChange(
+        broadcast,
+        run.target,
+        run.sessionId,
+        result.status === "failed" || result.status === "timed_out" || result.status === "lost" ? "error" : "completed",
+        result.error ? {error: result.error} : {},
+      );
+    } catch (error) {
+      await this.#options.logger.warn("Could not finalize the native task after a service reconnect", {
+        sessionId: run.sessionId,
+        error,
+      });
     }
   }
 
@@ -362,14 +361,6 @@ export class TaskService extends EventEmitter {
       });
     }
   }
-}
-
-async function connectDesktopServices(
-  port: DesktopServicePort["port"],
-  vendorAsar: string,
-): Promise<DesktopServiceConnection> {
-  const desktop = await import("./desktop-service.ts");
-  return desktop.connectDesktopServices(port, vendorAsar);
 }
 
 function workspaceTarget(workspacePath: string): Record<string, unknown> {

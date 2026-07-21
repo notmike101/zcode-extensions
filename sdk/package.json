@@ -1,0 +1,54 @@
+{
+  "name": "@notmike101/zcode-extension-sdk",
+  "version": "0.3.0",
+  "description": "Public TypeScript SDK and authoring helpers for ZCode Desktop Extensions.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/notmike101/zcode-extensions.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://github.com/notmike101/zcode-extensions/tree/main/sdk#readme",
+  "bugs": "https://github.com/notmike101/zcode-extensions/issues",
+  "files": [
+    "dist",
+    "manifest.schema.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.cjs"
+    },
+    "./main": {
+      "types": "./dist/types/main.d.ts",
+      "import": "./dist/esm/main.js",
+      "require": "./dist/cjs/main.cjs"
+    },
+    "./renderer": {
+      "types": "./dist/types/renderer.d.ts",
+      "import": "./dist/esm/renderer.js",
+      "require": "./dist/cjs/renderer.cjs"
+    },
+    "./experimental": {
+      "types": "./dist/types/experimental.d.ts",
+      "import": "./dist/esm/experimental.js",
+      "require": "./dist/cjs/experimental.cjs"
+    },
+    "./manifest.schema.json": "./manifest.schema.json",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/cjs/index.cjs",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

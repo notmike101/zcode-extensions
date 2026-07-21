@@ -10,6 +10,10 @@ const root = path.resolve(import.meta.dir, "..");
 const args = process.argv.slice(2);
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as {version?: unknown};
 if (typeof packageJson.version !== "string") throw new Error("package.json has no version");
+const sdkPackageJson = JSON.parse(await readFile(path.join(root, "sdk", "package.json"), "utf8")) as {version?: unknown};
+if (sdkPackageJson.version !== packageJson.version) {
+  throw new Error(`SDK package version ${String(sdkPackageJson.version)} does not match host version ${packageJson.version}`);
+}
 const tag = resolveReleaseTag(
   valueAfter("--tag"),
   process.env.GITHUB_REF_TYPE,

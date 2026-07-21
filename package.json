@@ -1,6 +1,6 @@
 {
   "name": "zcode-desktop-extensions",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "An update-resistant extension host for the ZCode Electron desktop application.",
   "private": true,
   "license": "MIT",
@@ -13,10 +13,12 @@
   "packageManager": "bun@1.3.14",
   "scripts": {
     "build": "bun scripts/build.ts",
+    "build:sdk": "bun scripts/build-sdk.ts",
     "build:example": "bun examples/hello-extension/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "check": "bun run typecheck && bun test && bun run build:example && bun run build",
+    "check": "bun run typecheck && bun test && bun run build:sdk && bun scripts/check-sdk-package.ts && bun run build:example && bun run build",
+    "pack:sdk": "npm pack ./sdk --dry-run",
     "release:package": "bun scripts/package-release.ts",
     "zdp": "bun src/cli/index.ts"
   },
@@ -33,7 +35,8 @@
     "@types/node": "^24.10.1",
     "@types/semver": "^7.7.1",
     "@types/yauzl": "^3.4.0",
-    "electron": "41.0.3",
+    "electron": "41.1.0",
+    "happy-dom": "^20.11.0",
     "typescript": "^5.9.3"
   }
 }
