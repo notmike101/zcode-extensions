@@ -42,3 +42,6 @@ jobs:
 
       - name: Typecheck, test, and build
         run: bun run check
+
+      - name: Verify public SDK package contents
+        run: npm pack ./sdk --dry-run

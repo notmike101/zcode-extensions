@@ -12,5 +12,6 @@
     "jsxImportSource": "preact",
     "types": ["bun", "node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "sdk/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "sdk/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["tests/fixtures/sdk-consumer"]
 }

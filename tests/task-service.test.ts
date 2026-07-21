@@ -121,7 +121,22 @@ function createHarness() {
     waitForPort: async () => entry,
     dispose() {},
   };
-  const connection = {broadcast, session, task, dispose() {}} as unknown as DesktopServiceConnection;
+  const services = {broadcast, "zcode-session": session, "zcode-task": task};
+  const connection = {
+    broadcast,
+    session,
+    task,
+    service: (name: keyof typeof services) => services[name],
+    channel: (name: keyof typeof services) => ({
+      async call() { return undefined; },
+      listen(event: string, argument?: unknown) {
+        if (name !== "zcode-session" || event !== "onDynamicSessionEvent") throw new Error(`Unexpected listener ${name}:${event}`);
+        void argument;
+        return session.onDynamicSessionEvent();
+      },
+    }),
+    dispose() {},
+  } as unknown as DesktopServiceConnection;
   const service = new TaskService({
     vendorAsar: "unused",
     portBroker: broker,

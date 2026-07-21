@@ -25,4 +25,8 @@ button, input, textarea, select { font: inherit; }
 .zdp-error-text { color: #ffb3ae; white-space: pre-wrap; font-size: 11px; }.zdp-empty { padding: 28px; text-align: center; color: #8f96a2; border: 1px dashed #3b404a; border-radius: 10px; }
 .zdp-health { display: grid; grid-template-columns: 170px minmax(0,1fr); border: 1px solid #343943; border-radius: 10px; overflow: hidden; }.zdp-health dt,.zdp-health dd { margin: 0; padding: 11px 13px; border-bottom: 1px solid #30343d; font-size: 12px; }.zdp-health dt { color: #8f96a2; background: #1b1e24; }.zdp-health dd { overflow-wrap: anywhere; background: #20232a; }
 .zdp-log-title { margin: 22px 0 8px; font-size: 13px; }.zdp-log { max-height: 260px; overflow: auto; padding: 12px; border-radius: 8px; background: #101217; color: #9ba5b8; white-space: pre-wrap; font: 10px/1.55 ui-monospace,monospace; }
+.zdp-capabilities { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.zdp-capabilities span { border: 1px solid #454c5b; border-radius: 999px; padding: 2px 7px; color: #aab1bf; font-size: 10px; }
+.zdp-capabilities span.write { border-color: #9d7428; color: #e4b65c; }
+.zdp-capabilities span.experimental { border-color: #87549a; color: #d9a0ec; }
 @media (max-width: 700px) { .zdp-shell { width: calc(100vw - 20px); height: calc(100vh - 20px); }.zdp-body { grid-template-columns: 130px 1fr; }.zdp-content { padding: 15px; } }

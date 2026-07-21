@@ -9,6 +9,7 @@ import {writeJsonAtomic} from "../shared/atomic.ts";
 import {type PluginManifest, type PluginStatus} from "../shared/schemas.ts";
 import type {JsonLogger} from "../shared/logger.ts";
 import type {TaskService} from "../protocol/task-service.ts";
+import type {ExtensionZCodeService} from "../protocol/extension-service.ts";
 import {containedExtensionPath, readExtensionManifest, rejectExtensionLinks} from "./extension-bundle.ts";
 import {ExtensionUpdater, type AppliedUpdate} from "./extension-updater.ts";
 
@@ -33,6 +34,7 @@ type PluginManagerOptions = {
   zcodeVersion: string;
   logger: JsonLogger;
   taskService: TaskService;
+  zcodeService: ExtensionZCodeService;
   emit: (event: string, payload?: unknown) => void;
   onResume: (handler: () => void) => Disposable;
 };
@@ -42,6 +44,7 @@ export class PluginManager {
   readonly #paths;
   readonly #records = new Map<string, PluginRecord>();
   readonly #ipcHandlers = new Map<string, (payload: unknown) => unknown | Promise<unknown>>();
+  readonly #rendererSubscriptions = new Map<string, {pluginId: string; dispose: () => unknown}>();
   readonly #updater: ExtensionUpdater;
   #enabledState: Record<string, boolean> = {};
 
@@ -186,6 +189,61 @@ export class PluginManager {
     return handler(payload);
   }
 
+  async inspectCatalog(pluginId: string): Promise<PluginManifest> {
+    const prepared = await this.#updater.prepareCatalogInstall(pluginId);
+    try {
+      const manifest = await readExtensionManifest(prepared.root);
+      this.#checkCompatibility(manifest);
+      return manifest;
+    } finally {
+      await this.#updater.cleanupPrepared(prepared);
+    }
+  }
+
+  async inspect(sourceDirectory: string): Promise<PluginManifest> {
+    const sourceRoot = await realpath(sourceDirectory);
+    await rejectExtensionLinks(sourceRoot);
+    const manifest = await readExtensionManifest(sourceRoot);
+    this.#checkCompatibility(manifest);
+    return manifest;
+  }
+
+  capabilities(pluginId: string) {
+    return this.#options.zcodeService.capabilities(this.#require(pluginId).manifest);
+  }
+
+  async invokeZCode(pluginId: string, operation: string, payload: unknown): Promise<unknown> {
+    if (!operation || operation.length > 120) throw new Error("Invalid ZCode extension operation");
+    const record = this.#require(pluginId);
+    if (!record.enabled) throw new Error(`Extension is disabled: ${pluginId}`);
+    return this.#options.zcodeService.invoke(record.manifest, operation, payload);
+  }
+
+  subscribeZCode(pluginId: string, stream: string, payload: unknown): string {
+    const record = this.#require(pluginId);
+    if (!record.enabled) throw new Error(`Extension is disabled: ${pluginId}`);
+    const subscriptionId = randomUUID();
+    const subscription = this.#options.zcodeService.subscribe(record.manifest, stream, payload, (value) => {
+      this.#options.emit(`plugin:${pluginId}:zcode:${subscriptionId}`, value);
+    });
+    let active = true;
+    const disposable = {dispose: () => {
+      if (!active) return;
+      active = false;
+      this.#rendererSubscriptions.delete(subscriptionId);
+      return subscription.dispose();
+    }};
+    this.#rendererSubscriptions.set(subscriptionId, {pluginId, dispose: disposable.dispose});
+    record.disposables.push(disposable);
+    return subscriptionId;
+  }
+
+  unsubscribeZCode(pluginId: string, subscriptionId: string): void {
+    const subscription = this.#rendererSubscriptions.get(subscriptionId);
+    if (!subscription || subscription.pluginId !== pluginId) return;
+    subscription.dispose();
+  }
+
   rendererPath(pluginId: string): string {
     const record = this.#require(pluginId);
     if (!record.enabled || !record.manifest.entrypoints.renderer) throw new Error("Renderer entrypoint is unavailable");
@@ -229,6 +287,10 @@ export class PluginManager {
       if (typeof module.activate !== "function") throw new Error("Main entrypoint must export activate(context)");
       record.module = module;
       const logger = this.#options.logger.child(`plugin:${record.manifest.id}`);
+      const track = <T extends Disposable>(disposable: T): T => {
+        record.disposables.push(disposable);
+        return disposable;
+      };
       const context: PluginContext = {
         manifest: record.manifest,
         dataDir: path.join(this.#paths.data, "plugin-data", record.manifest.id),
@@ -245,14 +307,8 @@ export class PluginManager {
           },
           emit: (event, payload) => this.#options.emit(`plugin:${record.manifest.id}:${event}`, payload),
         },
-        lifecycle: {onResume: (handler) => this.#options.onResume(handler)},
-        zcode: {
-          readWorkspaceState: (workspacePath) => this.#options.taskService.readWorkspaceState(workspacePath),
-          tasks: {
-            run: (spec) => this.#options.taskService.run(spec),
-            ensureVisible: (spec) => this.#options.taskService.ensureVisible(spec),
-          },
-        },
+        lifecycle: {onResume: (handler) => track(this.#options.onResume(handler))},
+        zcode: this.#options.zcodeService.createApi(record.manifest, track),
       };
       await mkdir(context.dataDir, {recursive: true});
       const activated = await module.activate(context);
@@ -263,6 +319,11 @@ export class PluginManager {
       await logger.info("Extension activated", {version: record.manifest.version});
     } catch (error) {
       record.error = error instanceof Error ? error.message : String(error);
+      for (const disposable of record.disposables.splice(0).reverse()) {
+        try { await disposable.dispose(); } catch { /* isolated partial activation cleanup */ }
+      }
+      record.deactivate = undefined;
+      record.module = undefined;
       await this.#options.logger.error("Extension activation failed", {pluginId: record.manifest.id, error});
     }
   }

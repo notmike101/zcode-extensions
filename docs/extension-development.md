@@ -1,21 +1,20 @@
 # Developing ZCode Desktop Extensions
 
-This guide describes extension API version 1. The public TypeScript contract is [`sdk/index.ts`](../sdk/index.ts), and [Hello Extension](../examples/hello-extension) is a complete buildable example.
+This guide describes extension API version 1 as implemented by host/SDK 0.3.0. The public package is [`@notmike101/zcode-extension-sdk`](https://www.npmjs.com/package/@notmike101/zcode-extension-sdk), the source contract is [`sdk/index.ts`](../sdk/index.ts), and [Hello Extension](../examples/hello-extension) remains a complete legacy-lifecycle example.
 
-Extensions are trusted local code. A main entrypoint runs in ZCode's Electron main process with Node.js access, while an optional renderer entrypoint runs in the ZCode renderer and mounts pages inside the Extensions manager.
+Extensions are trusted local code. A main entrypoint runs in ZCode's Electron main process with Node.js access, while an optional renderer entrypoint runs inside the ZCode renderer. Declared capabilities control access through the SDK and are shown during installation; they do not sandbox trusted Node or renderer code.
 
 ## Quick start
 
-From a clone of this repository:
+For a separate Bun or TypeScript project:
 
 ```powershell
-bun install --frozen-lockfile
-bun run build:example
+bun add -d @notmike101/zcode-extension-sdk@0.3.0
 ```
 
-Open **Extensions → Installed → Install extension** and select `examples\hello-extension`. Open **Hello** in the manager and use **Reload** after rebuilding an installed development copy.
+Import main-only types and helpers from `@notmike101/zcode-extension-sdk/main`, browser-safe renderer types and helpers from `/renderer`, and unstable raw-channel types from `/experimental`. The root export is also browser-safe. A JSON Schema is available at `/manifest.schema.json`, and `validateExtensionManifest` or `assertExtensionManifest` can validate manifests at runtime.
 
-For a separate project, copy the example and `sdk/index.ts` together or reproduce the documented structural types. There is no npm SDK package in API version 1.
+From a clone of this repository, `bun run build:example` builds Hello Extension. Open **Extensions → Installed → Install extension**, select `examples\hello-extension`, then use **Reload** after rebuilding an installed development copy.
 
 ## Extension layout
 
@@ -51,9 +50,14 @@ The manifest filename remains `.zdp\plugin.json` for API compatibility:
     "renderer": "dist/renderer.js"
   },
   "engines": {
-    "host": ">=0.1.2 <1",
+    "host": ">=0.3.0 <1",
     "zcode": ">=3.3.6"
   },
+  "capabilities": [
+    "zcode.workspaces.read",
+    "zcode.tasks.run",
+    "ui.pages"
+  ],
   "pages": [
     {"id": "hello", "title": "Hello"}
   ]
@@ -72,15 +76,32 @@ The manifest filename remains `.zdp\plugin.json` for API compatibility:
 | `engines.host` | SemVer range for compatible ZCode Desktop Extensions host versions. |
 | `engines.zcode` | SemVer range for compatible ZCode releases. |
 | `pages` | Manager navigation entries. Page IDs follow the same identifier pattern and titles are limited to 40 characters. |
+| `capabilities` | Optional SDK/UI privileges. An omitted field receives only the legacy API-v1 workspace-read, task-run, and page behavior. |
 
 The manifest is strict: unknown keys, path traversal, absolute entrypoints, empty entrypoints, and incompatible engine ranges are rejected.
+
+### Capabilities
+
+| Capability | Enables |
+| --- | --- |
+| `zcode.workspaces.read` | Workspace state, provider registry, and defaults. |
+| `zcode.sessions.read` / `.events` / `.write` | Session history reads, subscriptions, and session mutation. |
+| `zcode.tasks.read` / `.run` / `.write` | Task metadata and usage, native task execution, and task mutation. |
+| `zcode.models.read` / `.generate` | Provider/default/MCP discovery and direct generation. |
+| `zcode.usage.read` | Sanitized model-request history and lifecycle events. |
+| `zcode.broadcast` | Named host broadcast channels. |
+| `ui.pages` / `.navigation` / `.workspace` / `.tasks` / `.chat` / `.overlays` | The matching page or stable UI contribution surfaces. |
+| `experimental.zcode.rpc` | Version-gated private ZCode service channels. |
+| `experimental.ui.dom` | Selector-based renderer anchors outside stable UI slots. |
+
+Calls without their declared capability reject with an explicit error. Use `context.zcode.capabilities()` or `rendererContext.capabilities` to inspect the effective grants. Existing API-v1 manifests without a `capabilities` field remain compatible and receive `zcode.workspaces.read`, `zcode.tasks.run`, and `ui.pages` only.
 
 ## Main entrypoint
 
 Export `activate(context)`. It may return a cleanup function or an object with `dispose()`. An optional `deactivate()` export is also supported.
 
 ```typescript
-import type {ExtensionContext, ExtensionDisposable} from "./sdk/index.ts";
+import type {ExtensionContext, ExtensionDisposable} from "@notmike101/zcode-extension-sdk/main";
 
 export async function activate(
   context: ExtensionContext,
@@ -110,48 +131,74 @@ Activation failures are isolated to the extension and shown in the manager. Disa
 | `ipc.handle(method, handler)` | Register a namespaced renderer-callable method and receive a disposable. |
 | `ipc.emit(event, payload)` | Emit `plugin:<id>:<event>` to renderer bridges. |
 | `lifecycle.onResume(handler)` | Run after Windows resume or unlock and receive a disposable. |
-| `zcode.readWorkspaceState(path)` | Read ZCode's current stored workspace state through the task protocol. |
+| `zcode.capabilities()` | Read declared/effective grants plus host/ZCode versions and supported UI slots. |
+| `zcode.workspaces.*` | Read workspace state, provider registry, and defaults. `readWorkspaceState` remains as a deprecated compatibility alias. |
+| `zcode.sessions.*` | Resolve a session ID to its read-only workspace target, list/read sessions and messages, subscribe to events, or perform capability-gated session actions. |
 | `zcode.tasks.run(spec)` | Start a normal persistent ZCode sidebar task and receive a run handle. |
 | `zcode.tasks.ensureVisible(spec)` | Restore a retained session to the native task index and optionally assign its title. Useful for one-time migrations. |
+| `zcode.tasks.*` | Read task metadata, snapshots/usage, subscribe to lifecycle changes, and perform task actions. |
+| `zcode.models.*` / `zcode.mcp.list()` | Discover model providers/defaults/MCP state or request model generation. |
+| `zcode.usage.*` | Read sanitized request history and subscribe to model-request lifecycle events. |
+| `zcode.broadcast.*` | Send/listen on named broadcast channels. |
+| `zcode.experimental.channel(name)` | Call or listen on a private service channel when explicitly enabled. |
 
 IPC method and event names use the identifier pattern. Duplicate handlers are rejected.
 
 ## Renderer entrypoint
 
-Renderer bundles register once through the compatibility global `window.ZDP_REGISTER_PLUGIN_RENDERER`. The registration `id` must equal the extension manifest ID.
+Renderer bundles register once through the compatibility global `window.ZDP_REGISTER_PLUGIN_RENDERER`. The registration `id` must equal the extension manifest ID. Host 0.3 adds global activation and page-aware mounting while preserving the legacy `mount(container, bridge)` lifecycle.
 
 ```typescript
-import type {ExtensionBridge} from "./sdk/index.ts";
+import {defineRendererExtension} from "@notmike101/zcode-extension-sdk/renderer";
+
+window.ZDP_REGISTER_PLUGIN_RENDERER?.(defineRendererExtension({
+  id: "hello-extension",
+  activate(context) {
+    context.subscriptions.add(context.ui.contribute(
+      "chat.message.footer",
+      (container, active) => {
+        if (active.role !== "assistant") return;
+        container.textContent = "Hello from the extension";
+      },
+    ));
+  },
+  async mountPage(pageId, container, context) {
+    if (pageId !== "hello") return;
+    const status = await context.ipc.invoke<{ready: boolean}>("status");
+    container.textContent = status.ready ? "Ready" : "Not ready";
+    return () => container.replaceChildren();
+  },
+}));
+```
+
+`activate(rendererContext)` runs once per enabled renderer and is the right place for subscriptions and UI contributions. `mountPage(pageId, container, rendererContext)` runs for the selected extension page. vNext pages and contributions are mounted inside extension-owned shadow roots; disable, reload, renderer teardown, or SPA replacement disposes and safely remounts them. Return a cleanup function or disposable from either lifecycle, or add it to `context.subscriptions`.
+
+`rendererContext` provides:
+
+- Namespaced `ipc.invoke` and `ipc.on` without manually supplying the extension ID.
+- Namespaced local UI preferences through `storage`; do not use it for prompts or responses.
+- The capability-gated ZCode read/event proxies available to renderer code.
+- `ui.activeContext` with current workspace, task, session, turn, message, role, status, and tool-call identifiers when available.
+- Toasts, confirmation dialogs, and stable UI contribution slots.
+- `ui.experimental.anchor(...)` for selector-based surfaces when `experimental.ui.dom` is declared.
+
+Stable contribution slots are `sidebar.navigation`, `workspace.header.actions`, `task.row.trailing`, `chat.header.actions`, `chat.overlay`, `chat.composer.leading`, `chat.composer.trailing`, `chat.turn.after`, `chat.message.before`, `chat.message.after`, `chat.message.footer`, and `chat.message.overlay`. The host enforces the matching `ui.*` capability.
+
+For host versions before 0.3, retain the legacy form when compatibility matters:
+
+```typescript
+import type {ExtensionBridge} from "@notmike101/zcode-extension-sdk/renderer";
 
 window.ZDP_REGISTER_PLUGIN_RENDERER?.({
   id: "hello-extension",
-  mount(container, bridge) {
-    const button = document.createElement("button");
-    button.textContent = "Check status";
-    container.replaceChildren(button);
-
-    const click = async () => {
-      const result = await invoke<{ready: boolean}>(bridge, "status");
-      button.textContent = result.ready ? "Ready" : "Not ready";
-    };
-    button.addEventListener("click", click);
-
-    return () => {
-      button.removeEventListener("click", click);
-      container.replaceChildren();
-    };
+  mount(container, bridge: ExtensionBridge) {
+    container.textContent = "Legacy page";
+    return () => container.replaceChildren();
   },
 });
-
-function invoke<T>(bridge: ExtensionBridge, method: string): Promise<T> {
-  return bridge.invoke<T>("plugin:invoke", {
-    pluginId: "hello-extension",
-    method,
-  });
-}
 ```
 
-`mount` receives a dedicated container and the preload bridge. Return cleanup that removes DOM listeners, subscriptions, observers, and timers. Namespace CSS selectors because all extension pages share the manager shadow root.
+Legacy `mount` receives the preload bridge directly. Namespace its CSS because legacy pages share the manager shadow root.
 
 ### Bridge methods
 
@@ -190,6 +237,46 @@ const result = await handle.completion;
 The completion status is one of `succeeded`, `failed`, `cancelled`, `timed_out`, `lost`, or `needs_attention`. Call `handle.stop()` during extension cleanup when an active run must be cancelled.
 
 The ZCode desktop task service is private and can change between ZCode releases. Use conservative engine ranges, handle service errors, and test against every ZCode version you claim to support. The host does not patch ZCode's task database or vendor source to provide this API.
+
+## Events and model usage
+
+Session subscriptions preserve host ordering and replay state across a service reconnect. Each normalized event carries `sessionId`, optional `turnId`/`seq`/trace/timestamp metadata, its `type`, a payload, the untouched `raw` envelope, and `known`. Known names cover session, turn, message/part, model/tool, permission/input, checkpoint/rewind, and recovery events. An unrecognized future event is delivered with `known: false`; it is never silently discarded.
+
+Task, workspace, and broadcast subscriptions use the same forward-compatible envelope approach. Always dispose a subscription. The gateway reference-counts equivalent private-service subscriptions, tears them down when the last listener leaves, and reconnects with its last sequence cursor when possible. Renderer extensions that begin with only an active `sessionId` can call `sessions.resolveTarget(sessionId)` before listing or subscribing; ambiguous task-index matches return `undefined` instead of selecting the wrong workspace.
+
+`zcode.usage.listModelRequests({sessionId, limit})` returns bounded, sanitized model-request records. They can include request/turn IDs, attempt, timing, model/provider identity, call source, status, finish reason, and provider token usage. Prompt and response bodies are never exposed by the usage API. `subscribeModelRequests` emits start, completion, failure, retry, and stall lifecycle records with the same restriction.
+
+```typescript
+const history = await context.zcode.usage.listModelRequests({
+  sessionId,
+  limit: 200,
+});
+
+for (const request of history.records) {
+  const outputTokens = request.usage?.outputTokens;
+  if (request.status === "completed" && outputTokens && request.durationMs) {
+    const tokensPerSecond = outputTokens / (request.durationMs / 1000);
+    await context.logger.info("Model throughput", {
+      requestId: request.requestId,
+      tokensPerSecond,
+    });
+  }
+}
+```
+
+This duration is the complete provider request, including time to first token and network completion. It is not decoder-only throughput. Extensions must decide explicitly whether retries, subagents, compact calls, and sidecars belong in their own aggregate.
+
+## Experimental private channels
+
+When a stable API is not yet available, an extension may declare `experimental.zcode.rpc` and use:
+
+```typescript
+const channel = context.zcode.experimental.channel("installed-private-service");
+const result = await channel.call("commandName", {value: 1});
+const subscription = channel.listen("eventName", {includeSnapshot: true}, console.log);
+```
+
+The gateway can reach any installed private service channel, but this escape hatch deliberately makes no stability promise for its command names or wire payloads. Gate the extension to tested ZCode versions, validate every value, handle absence visibly, and dispose every listener.
 
 ## Persistence and scheduling
 

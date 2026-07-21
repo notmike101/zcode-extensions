@@ -131,7 +131,7 @@ export class DesktopServicePortBroker {
 
 export type Disposable = {dispose: () => unknown};
 
-type RpcChannel = {
+export type RpcChannel = {
   call: (command: string, argument?: unknown) => Promise<unknown>;
   listen: (event: string, argument?: unknown) => (listener: (value: unknown) => void) => Disposable;
 };
@@ -162,6 +162,8 @@ export type DesktopServiceConnection = {
   broadcast: Record<string, unknown>;
   session: Record<string, unknown>;
   task: Record<string, unknown>;
+  channel: (name: string) => RpcChannel;
+  service: <T extends Record<string, unknown> = Record<string, unknown>>(name: string) => T;
   dispose: () => void;
 };
 
@@ -171,10 +173,14 @@ export async function connectDesktopServices(port: MessagePortMain, vendorAsar: 
   const runtime = await (cachedRuntime ??= loadRpcRuntime(vendorAsar));
   const protocol = new runtime.MessagePortProtocol(toMessagePortLike(port));
   const client = new runtime.ChannelClient(protocol);
+  const service = <T extends Record<string, unknown> = Record<string, unknown>>(name: string): T =>
+    runtime.ProxyChannel.toService<T>(client.getChannel(name));
   return {
-    broadcast: runtime.ProxyChannel.toService(client.getChannel("broadcast")),
-    session: runtime.ProxyChannel.toService(client.getChannel("zcode-session")),
-    task: runtime.ProxyChannel.toService(client.getChannel("zcode-task")),
+    broadcast: service("broadcast"),
+    session: service("zcode-session"),
+    task: service("zcode-task"),
+    channel: (name) => client.getChannel(name),
+    service,
     dispose: () => {
       client.dispose();
       protocol.disconnect?.();

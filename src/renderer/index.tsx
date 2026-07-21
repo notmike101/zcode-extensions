@@ -2,6 +2,7 @@ import {render} from "preact";
 import {useEffect, useMemo, useRef, useState} from "preact/hooks";
 import type {CatalogExtensionStatus, HostState, PluginStatus} from "../shared/schemas.ts";
 import type {RendererPlugin, ZdpBridge} from "./globals.d.ts";
+import {RendererExtensionRuntime} from "./extension-runtime.ts";
 import styles from "./styles.css";
 
 const bridge = window.zcodeDesktopPlugins;
@@ -9,9 +10,11 @@ if (!bridge) throw new Error("ZCode Desktop Extensions preload bridge is unavail
 
 const modules = window.__zdpRendererPlugins ?? new Map<string, RendererPlugin>();
 window.__zdpRendererPlugins = modules;
+const extensionRuntime = new RendererExtensionRuntime(bridge);
 let nativeNavigationUpdateCount = 0;
 window.ZDP_REGISTER_PLUGIN_RENDERER = (plugin) => {
   modules.set(plugin.id, plugin);
+  extensionRuntime.register(plugin);
   window.dispatchEvent(new CustomEvent("zdp-renderer-registered", {detail: plugin.id}));
 };
 
@@ -40,6 +43,7 @@ function DesktopPluginsApp({bridge}: {bridge: ZdpBridge}) {
     try {
       const next = await bridge.invoke<HostState>("host:getState");
       window.__zdpHostState = next;
+      extensionRuntime.sync(next.plugins);
       setState(next);
       loadRendererScripts(next.plugins);
       setError(undefined);
@@ -237,7 +241,9 @@ function PluginList({state, busy, run, bridge}: {
   const install = async () => {
     const folder = await bridge.invoke<string | null>("host:choosePluginFolder");
     if (!folder) return;
-    if (!window.confirm("Desktop extensions are trusted local code and can access your files. Install this folder?")) return;
+    const manifest = await bridge.invoke<PluginStatus["manifest"]>("plugin:inspect", {path: folder});
+    const declared = manifest.capabilities?.length ? manifest.capabilities.join("\n• ") : "legacy defaults (workspace read, task run, extension pages)";
+    if (!window.confirm(`Desktop extensions are trusted local code and can access your files.\n\n${manifest.name} requests:\n• ${declared}\n\nInstall this folder?`)) return;
     await bridge.invoke("plugin:install", {path: folder});
   };
   const check = () => bridge.invoke("extension:checkUpdates");
@@ -272,6 +278,9 @@ function PluginCard({plugin, busy, run, bridge}: {
         {plugin.update.state === "available" ? "Update available" : plugin.update.state === "queued" ? "Update queued" : plugin.error ? "Error" : plugin.loaded ? "Loaded" : "Stopped"}
       </span></div>
     {plugin.error && <pre class="zdp-error-text">{plugin.error}</pre>}
+    {plugin.manifest.capabilities?.length ? <div class="zdp-capabilities">
+      {plugin.manifest.capabilities.map((capability) => <span key={capability} class={capability.startsWith("experimental.") ? "experimental" : capability.includes(".write") || capability.includes(".generate") ? "write" : ""}>{capability}</span>)}
+    </div> : <div class="zdp-update-note warning">Legacy capability defaults: workspace read, task run, and extension pages.</div>}
     {plugin.update.state === "queued" && <div class="zdp-update-note">Version {plugin.update.queuedVersion} is verified and will be applied on the next ZCode launch.</div>}
     {plugin.update.state === "incompatible" && <div class="zdp-update-note warning">Version {plugin.update.latestVersion} requires a different host or ZCode version.</div>}
     {plugin.update.state === "error" && <div class="zdp-update-note warning">Update check failed: {plugin.update.error}</div>}
@@ -313,7 +322,9 @@ function CatalogCard({extension, busy, run, bridge}: {
   bridge: ZdpBridge;
 }) {
   const install = async () => {
-    if (!window.confirm(`${extension.name} is trusted local code and can access your files. Download and install it?`)) return;
+    const manifest = await bridge.invoke<PluginStatus["manifest"]>("catalog:inspect", {pluginId: extension.id});
+    const declared = manifest.capabilities?.length ? manifest.capabilities.join("\n• ") : "legacy defaults (workspace read, task run, extension pages)";
+    if (!window.confirm(`${extension.name} is trusted local code and can access your files.\n\nIt requests:\n• ${declared}\n\nDownload and install it?`)) return;
     await bridge.invoke("catalog:install", {pluginId: extension.id});
   };
   return <article class="zdp-card">
@@ -345,11 +356,17 @@ function HealthPage({state, bridge}: {state: HostState | null; bridge: ZdpBridge
 function PluginPage({page, bridge}: {page: string; bridge: ZdpBridge}) {
   const container = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const [pluginId] = page.split(":");
-    const plugin = modules.get(pluginId);
-    if (!plugin || !container.current) return;
-    const cleanup = plugin.mount(container.current, bridge);
-    return typeof cleanup === "function" ? cleanup : undefined;
+    const [pluginId, pageId] = page.split(":");
+    if (!pluginId || !pageId || !modules.has(pluginId) || !container.current) return;
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+    void extensionRuntime.mountPage(pluginId, pageId, container.current).then((next) => {
+      if (disposed) next();
+      else cleanup = next;
+    }).catch((error) => {
+      if (container.current) container.current.textContent = errorText(error);
+    });
+    return () => { disposed = true; cleanup?.(); };
   }, [page]);
   const [pluginId] = page.split(":");
   return <div ref={container}>{!modules.has(pluginId) && <div class="zdp-empty">Loading extension page…</div>}</div>;

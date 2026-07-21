@@ -19,7 +19,10 @@ This is an independent community project and is not affiliated with or endorsed 
 - A separate extension host with install, enable, disable, reload, and recoverable uninstall operations.
 - A checksum-verified extension catalog and updater with next-launch installation and activation-failure rollback.
 - Main-process and renderer extension entrypoints with namespaced IPC and lifecycle cleanup.
-- A typed extension SDK and a complete [extension-development guide](docs/extension-development.md).
+- The dual ESM/CommonJS [`@notmike101/zcode-extension-sdk`](https://www.npmjs.com/package/@notmike101/zcode-extension-sdk), with browser-safe renderer exports and manifest validation.
+- Capability-gated workspace, session, task, model, MCP, usage, broadcast, and experimental private-channel APIs.
+- Typed event streams plus stable shadow-root UI slots for pages, navigation, workspaces, tasks, chat, turns, and messages.
+- A complete [extension-development guide](docs/extension-development.md).
 - A native desktop task bridge so extension-created work appears as ordinary persistent ZCode tasks.
 - A guardian that detects updater-provided ZCode application bundles and reapplies the loader after ZCode exits.
 - Doctor, repair, safe-mode, launch, and uninstall commands.
@@ -40,7 +43,7 @@ Release executables are currently unsigned. Windows SmartScreen may warn before 
 3. Verify the archive:
 
    ```powershell
-   $zip = ".\zcode-extensions-v0.2.0-windows-x64.zip"
+   $zip = ".\zcode-extensions-v0.3.0-windows-x64.zip"
    $expected = (Get-Content "$zip.sha256").Split()[0].ToLowerInvariant()
    $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
    if ($actual -ne $expected) { throw "Checksum mismatch" }
@@ -49,7 +52,7 @@ Release executables are currently unsigned. Windows SmartScreen may warn before 
 4. Extract the archive to a permanent location. The ZIP contains a stable `zcode-extensions` directory:
 
    ```powershell
-   Expand-Archive .\zcode-extensions-v0.2.0-windows-x64.zip -DestinationPath D:\
+   Expand-Archive .\zcode-extensions-v0.3.0-windows-x64.zip -DestinationPath D:\
    Set-Location D:\zcode-extensions
    ```
 
@@ -107,7 +110,7 @@ Queued updates replace only the extension bundle on startup. The previous bundle
 Close ZCode, download the new release, and extract it over the same parent directory:
 
 ```powershell
-Expand-Archive .\zcode-extensions-v0.2.0-windows-x64.zip -DestinationPath D:\ -Force
+Expand-Archive .\zcode-extensions-v0.3.0-windows-x64.zip -DestinationPath D:\ -Force
 Set-Location D:\zcode-extensions
 .\bin\zdp.exe repair
 .\bin\zdp.exe launch
@@ -176,7 +179,9 @@ bun run typecheck
 bun test
 bun run build:example
 bun run build
-bun run release:package -- --tag v0.2.0
+bun run build:sdk
+bun run pack:sdk
+bun run release:package -- --tag v0.3.0
 ```
 
 See [Developing extensions](docs/extension-development.md) for the public API and [Hello Extension](examples/hello-extension) for a complete minimal project.
