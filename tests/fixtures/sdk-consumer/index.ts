@@ -1,6 +1,7 @@
 import {assertExtensionManifest} from "@notmike101/zcode-extension-sdk";
 import {defineMainExtension} from "@notmike101/zcode-extension-sdk/main";
 import {defineRendererExtension} from "@notmike101/zcode-extension-sdk/renderer";
+import type {ModelRequestRecord, ZCodeSubscriptionTarget} from "@notmike101/zcode-extension-sdk/renderer";
 import type {ZCodeRawChannel} from "@notmike101/zcode-extension-sdk/experimental";
 
 const manifest = assertExtensionManifest({
@@ -27,4 +28,8 @@ defineRendererExtension({
 });
 
 declare const channel: ZCodeRawChannel;
+declare const requestRecord: ModelRequestRecord;
+declare const subscriptionTarget: ZCodeSubscriptionTarget;
 void channel.call("inspect", {});
+void requestRecord.usage?.outputTokens;
+void subscriptionTarget.includeSnapshot;

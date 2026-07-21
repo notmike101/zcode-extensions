@@ -4,4 +4,4 @@ export type {
   ModelRequestEvent,
   ZCodeRawChannel,
   ZCodeStreamEnvelope,
-} from "./index";
+} from "./index.js";
