@@ -112,4 +112,12 @@ jobs:
           npm pack ./sdk --dry-run
 
       - name: Publish SDK with OIDC provenance
-        run: npm publish ./sdk --access public
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./sdk/package.json').version")"
+          package_spec="@notmike101/zcode-extension-sdk@${package_version}"
+          if npm view "$package_spec" version --json >/dev/null 2>&1; then
+            echo "$package_spec is already published; leaving the immutable version unchanged."
+          else
+            npm publish ./sdk --access public
+          fi
