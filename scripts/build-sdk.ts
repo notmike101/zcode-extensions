@@ -24,6 +24,16 @@ if (await declarations.exited !== 0) throw new Error("SDK declaration build fail
 console.log(`Built public SDK to ${dist}`);
 
 async function bundle(format: "esm" | "cjs", outdir: string, naming: string): Promise<void> {
-  const result = await Bun.build({entrypoints, outdir, format, target: "browser", naming, sourcemap: "external", minify: false});
-  if (!result.success) throw new AggregateError(result.logs, `SDK ${format} build failed`);
+  for (const entrypoint of entrypoints) {
+    const result = await Bun.build({
+      entrypoints: [entrypoint],
+      outdir,
+      format,
+      target: "browser",
+      naming,
+      sourcemap: "external",
+      minify: false,
+    });
+    if (!result.success) throw new AggregateError(result.logs, `SDK ${format} build failed for ${path.basename(entrypoint)}`);
+  }
 }
