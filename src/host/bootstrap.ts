@@ -12,6 +12,7 @@ import {TaskService} from "../protocol/task-service.ts";
 import {ZCodeGateway} from "../protocol/zcode-gateway.ts";
 import {ExtensionZCodeService} from "../protocol/extension-service.ts";
 import {PluginManager} from "./plugin-manager.ts";
+import {observeRendererLoads} from "./renderer-loads.ts";
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "zdp",
@@ -179,11 +180,10 @@ app.once("ready", async () => {
 
 app.on("web-contents-created", (_event, contents) => {
   if (contents.getType() !== "window") return;
-  contents.once("did-finish-load", async () => {
+  observeRendererLoads(contents, async () => {
     try {
       await initialized;
       renderers.add(contents);
-      contents.once("destroyed", () => renderers.delete(contents));
       const rendererCode = await readFile(path.join(runtimeVersionDir, "renderer", "index.js"), "utf8");
       await contents.executeJavaScript(`${rendererCode}\n//# sourceURL=zdp-renderer.js`, true);
       await writeJsonAtomic(paths.bootState, {
@@ -196,7 +196,7 @@ app.on("web-contents-created", (_event, contents) => {
     } catch (error) {
       await logger.error("Renderer injection failed", error);
     }
-  });
+  }, () => renderers.delete(contents));
 });
 
 app.on("before-quit", (event) => {

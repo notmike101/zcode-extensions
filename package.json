@@ -1,6 +1,6 @@
 {
   "name": "zcode-desktop-extensions",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "An update-resistant extension host for the ZCode Electron desktop application.",
   "private": true,
   "license": "MIT",
