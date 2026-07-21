@@ -1,6 +1,6 @@
 # Developing ZCode Desktop Extensions
 
-This guide describes extension API version 1 as implemented by host/SDK 0.3.3. The public package is [`@notmike101/zcode-extension-sdk`](https://www.npmjs.com/package/@notmike101/zcode-extension-sdk), the source contract is [`sdk/index.ts`](../sdk/index.ts), and [Hello Extension](../examples/hello-extension) remains a complete legacy-lifecycle example.
+This guide describes extension API version 1 as implemented by host/SDK 0.3.4. The public package is [`@notmike101/zcode-extension-sdk`](https://www.npmjs.com/package/@notmike101/zcode-extension-sdk), the source contract is [`sdk/index.ts`](../sdk/index.ts), and [Hello Extension](../examples/hello-extension) remains a complete legacy-lifecycle example.
 
 Extensions are trusted local code. A main entrypoint runs in ZCode's Electron main process with Node.js access, while an optional renderer entrypoint runs inside the ZCode renderer. Declared capabilities control access through the SDK and are shown during installation; they do not sandbox trusted Node or renderer code.
 
@@ -9,7 +9,7 @@ Extensions are trusted local code. A main entrypoint runs in ZCode's Electron ma
 For a separate Bun or TypeScript project:
 
 ```powershell
-bun add -d @notmike101/zcode-extension-sdk@0.3.3
+bun add -d @notmike101/zcode-extension-sdk@0.3.4
 ```
 
 Import main-only types and helpers from `@notmike101/zcode-extension-sdk/main`, browser-safe renderer types and helpers from `/renderer`, and unstable raw-channel types from `/experimental`. The root export is also browser-safe. A JSON Schema is available at `/manifest.schema.json`, and `validateExtensionManifest` or `assertExtensionManifest` can validate manifests at runtime.
@@ -179,7 +179,7 @@ window.ZDP_REGISTER_PLUGIN_RENDERER?.(defineRendererExtension({
 - Namespaced local UI preferences through `storage`; do not use it for prompts or responses.
 - The capability-gated ZCode read/event proxies available to renderer code.
 - `ui.activeContext` with current workspace, task, session, turn, message, role, status, and tool-call identifiers when available.
-- Toasts, confirmation dialogs, and stable UI contribution slots.
+- A native directory picker through `ui.chooseDirectory()`, plus toasts, confirmation dialogs, and stable UI contribution slots. These native/overlay helpers require `ui.overlays`.
 - `ui.experimental.anchor(...)` for selector-based surfaces when `experimental.ui.dom` is declared.
 
 Stable contribution slots are `sidebar.navigation`, `workspace.header.actions`, `task.row.trailing`, `chat.header.actions`, `chat.overlay`, `chat.composer.leading`, `chat.composer.trailing`, `chat.turn.after`, `chat.message.before`, `chat.message.after`, `chat.message.footer`, and `chat.message.overlay`. The host enforces the matching `ui.*` capability.

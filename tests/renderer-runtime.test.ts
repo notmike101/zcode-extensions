@@ -115,6 +115,34 @@ describe("renderer extension runtime", () => {
       .rejects.toThrow("ui.pages");
   });
 
+  test("exposes the native directory picker through the capability-gated vNext UI context", async () => {
+    const allowedBridge = createBridge(["ui.pages", "ui.overlays"]);
+    const allowed = new RendererExtensionRuntime(allowedBridge.value);
+    let selected: string | null | undefined;
+    allowed.register({
+      id: "runtime-test",
+      async mountPage(_pageId, _container, context) {
+        selected = await context.ui.chooseDirectory();
+      },
+    });
+    allowed.sync([status(1, true, ["ui.pages", "ui.overlays"])]);
+    const container = window.document.createElement("div");
+    await allowed.mountPage("runtime-test", "dashboard", container as never);
+    expect(selected).toBe("D:\\selected-workspace");
+    expect(allowedBridge.directorySelections).toBe(1);
+
+    const denied = new RendererExtensionRuntime(createBridge(["ui.pages"]).value);
+    denied.register({
+      id: "runtime-test",
+      async mountPage(_pageId, _container, context) {
+        await context.ui.chooseDirectory();
+      },
+    });
+    denied.sync([status(1, true, ["ui.pages"])]);
+    await expect(denied.mountPage("runtime-test", "dashboard", container as never))
+      .rejects.toThrow("ui.overlays");
+  });
+
   test("supplies the assistant descendant as context for a real ZCode turn shell without turn ids", async () => {
     const runtime = new RendererExtensionRuntime(createBridge(["ui.chat"]).value);
     let mountedContext: ActiveUiContext | undefined;
@@ -178,6 +206,7 @@ function createBridge(granted: ExtensionManifest["capabilities"] = [], legacyDef
   const listeners = new Set<(event: string, payload: unknown) => void>();
   let subscriptions = 0;
   let unsubscriptions = 0;
+  let directorySelections = 0;
   const capabilities: ExtensionHostCapabilities = {
     apiVersion: 1,
     hostVersion: "0.3.0",
@@ -199,6 +228,10 @@ function createBridge(granted: ExtensionManifest["capabilities"] = [], legacyDef
         unsubscriptions += 1;
         return undefined as T;
       }
+      if (method === "host:chooseDirectory") {
+        directorySelections += 1;
+        return "D:\\selected-workspace" as T;
+      }
       return undefined as T;
     },
     on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -207,6 +240,7 @@ function createBridge(granted: ExtensionManifest["capabilities"] = [], legacyDef
     value,
     get subscriptions() { return subscriptions; },
     get unsubscriptions() { return unsubscriptions; },
+    get directorySelections() { return directorySelections; },
   };
 }
 
