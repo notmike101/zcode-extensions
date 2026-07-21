@@ -1,31 +1,37 @@
-export {
-  ZCODE_EXTENSION_API_VERSION,
-  defineMainExtension,
-  type ExtensionActivationResult,
-  type ExtensionCapability,
-  type ExtensionContext,
-  type ExtensionDisposable,
-  type ExtensionHostCapabilities,
-  type ExtensionLogger,
-  type ExtensionManifest,
-  type ExtensionModule,
-  type ExtensionTaskRunHandle,
-  type ExtensionTaskSpec,
-  type ExtensionZCodeApi,
-  type ModelRequestEvent,
-  type ModelRequestHistory,
-  type ModelRequestRecord,
-  type ModelTokenUsage,
-  type ZCodeMcpServerStatus,
-  type ZCodeMessage,
-  type ZCodeModelGenerationResult,
-  type ZCodeProviderDescriptor,
-  type ZCodeProviderRegistry,
-  type ZCodeSessionEvent,
-  type ZCodeSessionSummary,
-  type ZCodeSessionTarget,
-  type ZCodeTaskListResult,
-  type ZCodeTaskSummary,
-  type ZCodeWorkspaceDefaults,
-  type ZCodeWorkspaceTarget,
-} from "./index.js";
+import type * as Sdk from "./index";
+
+export const ZCODE_EXTENSION_API_VERSION = 1 as const;
+
+export function defineMainExtension(extension: Sdk.ExtensionModule): Sdk.ExtensionModule {
+  return extension;
+}
+
+export type {
+  ExtensionActivationResult,
+  ExtensionCapability,
+  ExtensionContext,
+  ExtensionDisposable,
+  ExtensionHostCapabilities,
+  ExtensionLogger,
+  ExtensionManifest,
+  ExtensionModule,
+  ExtensionTaskRunHandle,
+  ExtensionTaskSpec,
+  ExtensionZCodeApi,
+  ModelRequestEvent,
+  ModelRequestHistory,
+  ModelRequestRecord,
+  ModelTokenUsage,
+  ZCodeMcpServerStatus,
+  ZCodeMessage,
+  ZCodeModelGenerationResult,
+  ZCodeProviderDescriptor,
+  ZCodeProviderRegistry,
+  ZCodeSessionEvent,
+  ZCodeSessionSummary,
+  ZCodeSessionTarget,
+  ZCodeTaskListResult,
+  ZCodeTaskSummary,
+  ZCodeWorkspaceDefaults,
+  ZCodeWorkspaceTarget,
+} from "./index";

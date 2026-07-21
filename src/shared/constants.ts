@@ -1,7 +1,7 @@
 import path from "node:path";
 
 export const HOST_NAME = "ZCode Desktop Extensions";
-export const HOST_VERSION = "0.3.0";
+export const HOST_VERSION = "0.3.1";
 export const API_VERSION = 1;
 export const INSTALL_STATE_VERSION = 1;
 export const DEFAULT_ZCODE_ROOT = path.join(
