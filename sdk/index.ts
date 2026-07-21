@@ -661,6 +661,8 @@ export type RendererExtensionContext = {
       mount: UiContributionMount,
       options?: {order?: number; when?: (context: ActiveUiContext) => boolean},
     ): ExtensionDisposable;
+    /** Opens the host's native directory picker. Requires `ui.overlays`. */
+    chooseDirectory(): Promise<string | null>;
     showToast(message: string, options?: {kind?: "info" | "success" | "warning" | "error"; timeoutMs?: number}): ExtensionDisposable;
     showDialog(options: {title: string; message: string; confirmLabel?: string; cancelLabel?: string}): Promise<boolean>;
     experimental: {
@@ -684,7 +686,7 @@ export type RendererExtension = {
     pageId: string,
     container: HTMLElement,
     context: RendererExtensionContext,
-  ) => void | (() => void) | ExtensionDisposable;
+  ) => ExtensionActivationResult | Promise<ExtensionActivationResult>;
   /** Legacy API v1 page lifecycle. */
   mount?: (
     container: HTMLElement,

@@ -229,6 +229,10 @@ function createRendererContext(
         onDidChange: (listener) => disposables.add(ui.onActiveContextChanged(listener)),
       },
       contribute: (slot, mount, options) => disposables.add(ui.contribute(pluginId, capabilities, slot, mount, options)),
+      chooseDirectory: async () => {
+        requireUiCapability(capabilities, "ui.overlays");
+        return bridge.invoke<string | null>("host:chooseDirectory");
+      },
       showToast: (message, options) => disposables.add(ui.showToast(pluginId, capabilities, message, options)),
       showDialog: (options) => ui.showDialog(capabilities, options),
       experimental: {
