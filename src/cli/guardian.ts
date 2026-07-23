@@ -1,9 +1,11 @@
-import {stat} from "node:fs/promises";
+import {readFile, stat} from "node:fs/promises";
 import path from "node:path";
 import {installOrRepair, isZCodeRunning} from "./installer.ts";
+import {getPaths, resolveZdpRoot} from "../shared/constants.ts";
 
 export async function guard(parentPid: number, zcodeRoot: string): Promise<void> {
   while (isProcessAlive(parentPid)) await delay(1_000);
+  if (await hostUpdatePending()) return;
   const appAsar = path.join(zcodeRoot, "resources", "app.asar");
   let stableSamples = 0;
   let previousSize = -1;
@@ -18,6 +20,13 @@ export async function guard(parentPid: number, zcodeRoot: string): Promise<void>
     await delay(1_000);
   }
   if (!isZCodeRunning()) await installOrRepair(zcodeRoot, {skipProcessCheck: true}).catch(() => undefined);
+}
+
+async function hostUpdatePending(): Promise<boolean> {
+  try {
+    const value = JSON.parse(await readFile(getPaths(resolveZdpRoot()).hostUpdateState, "utf8")) as {phase?: unknown};
+    return value.phase === "ready" || value.phase === "applying";
+  } catch { return false; }
 }
 
 function isProcessAlive(pid: number): boolean {

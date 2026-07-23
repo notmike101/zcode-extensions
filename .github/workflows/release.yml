@@ -64,10 +64,10 @@ jobs:
           }
 
           $assets = @(Get-ChildItem "dist/release" -File | Where-Object {
-            $_.Name -like "*.zip" -or $_.Name -like "*.zip.sha256"
+            $_.Name -like "*.zip" -or $_.Name -like "*.zip.sha256" -or $_.Name -eq "host-update.json"
           })
-          if ($assets.Count -ne 2) {
-            throw "Expected exactly one ZIP and one SHA-256 asset; found $($assets.Count)."
+          if ($assets.Count -ne 3) {
+            throw "Expected one ZIP, one SHA-256 asset, and host-update.json; found $($assets.Count)."
           }
 
           $assetPaths = @($assets | ForEach-Object { $_.FullName })

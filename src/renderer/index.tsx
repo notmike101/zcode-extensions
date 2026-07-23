@@ -38,6 +38,7 @@ function DesktopPluginsApp({bridge}: {bridge: ZdpBridge}) {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [rendererRevision, setRendererRevision] = useState(0);
+  const [updateNotice, setUpdateNotice] = useState<string>();
 
   const refresh = async () => {
     try {
@@ -68,8 +69,20 @@ function DesktopPluginsApp({bridge}: {bridge: ZdpBridge}) {
 
   useEffect(() => installNativeNavigationItem(() => setOpen(true)), []);
 
-  const availableUpdateCount = state?.plugins.filter((plugin) => plugin.update.state === "available").length ?? 0;
+  const extensionUpdateCount = state?.plugins.filter((plugin) => plugin.update.state === "available").length ?? 0;
+  const hostUpdateAvailable = state?.hostUpdate.state === "available" ? 1 : 0;
+  const availableUpdateCount = extensionUpdateCount + hostUpdateAvailable;
   useEffect(() => updateNativeNavigationBadge(availableUpdateCount), [availableUpdateCount]);
+  useEffect(() => {
+    const version = state?.hostUpdate.state === "available" ? state.hostUpdate.latestVersion : undefined;
+    if (!version) return;
+    const key = `zdp-host-update-noticed:${version}`;
+    try {
+      if (window.localStorage.getItem(key)) return;
+      window.localStorage.setItem(key, "1");
+    } catch { /* notification still works when storage is unavailable */ }
+    setUpdateNotice(version);
+  }, [state?.hostUpdate.state, state?.hostUpdate.latestVersion]);
 
   const pages = useMemo(() => state?.plugins.flatMap((plugin) => plugin.enabled
     ? plugin.manifest.pages.map((page) => ({...page, pluginId: plugin.manifest.id}))
@@ -83,6 +96,7 @@ function DesktopPluginsApp({bridge}: {bridge: ZdpBridge}) {
   };
 
   return <>
+    {updateNotice && <div class="zdp-toast" role="status"><div><strong>Host update {updateNotice} is available</strong><span>Open Extensions to review and install it.</span></div><button onClick={() => { setOpen(true); setActivePage("plugins"); setUpdateNotice(undefined); }}>View</button><button aria-label="Dismiss" onClick={() => setUpdateNotice(undefined)}>×</button></div>}
     {open && <div class="zdp-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
       <section class="zdp-shell" role="dialog" aria-label="ZCode Desktop Extensions">
         <header class="zdp-header">
@@ -185,7 +199,7 @@ function updateNativeNavigationBadge(count: number): void {
     textAlign: "center",
   });
   if (!existing) item.append(badge);
-  item.title = `${count} extension update${count === 1 ? "" : "s"} available`;
+  item.title = `${count} update${count === 1 ? "" : "s"} available`;
   item.setAttribute("aria-label", item.title);
 }
 
@@ -246,8 +260,16 @@ function PluginList({state, busy, run, bridge}: {
     if (!window.confirm(`Desktop extensions are trusted local code and can access your files.\n\n${manifest.name} requests:\n• ${declared}\n\nInstall this folder?`)) return;
     await bridge.invoke("plugin:install", {path: folder});
   };
-  const check = () => bridge.invoke("extension:checkUpdates");
+  const check = () => Promise.all([bridge.invoke("host:checkUpdate"), bridge.invoke("extension:checkUpdates")]);
+  const applyHostUpdate = async () => {
+    const version = state?.hostUpdate.latestVersion ?? "the latest version";
+    if (!window.confirm(`Download and verify host ${version}? ZCode will restart only after the update is ready, and the current host will be restored if installation fails.`)) return;
+    await bridge.invoke("host:applyUpdate");
+  };
   return <div>
+    {state?.hostUpdate.state === "available" && <div class="zdp-host-update-banner"><div><strong>Host {state.hostUpdate.latestVersion} is available</strong><span>{state.hostUpdate.installable ? "Download it now, then ZCode will restart to apply it." : "This development checkout cannot update itself; use the release package."}</span></div><div class="zdp-section-actions"><button onClick={() => run("view-host-update", () => bridge.invoke("host:viewUpdate"))}>View release</button>{state.hostUpdate.installable && <button class="zdp-primary" disabled={Boolean(busy)} onClick={() => run("apply-host-update", applyHostUpdate)}>Update and restart</button>}</div></div>}
+    {state?.hostUpdate.state === "ready" || state?.hostUpdate.state === "downloading" || state?.hostUpdate.state === "applying" ? <div class="zdp-host-update-banner"><div><strong>Host update {state.hostUpdate.state}</strong><span>{state.hostUpdate.state === "downloading" ? "ZCode will remain open until verification finishes." : "ZCode is preparing to restart."}</span></div></div> : null}
+    {state?.hostUpdate.state === "error" && <div class="zdp-update-note warning">Host update failed: {state.hostUpdate.error}</div>}
     <div class="zdp-section-title"><div><h2>Installed extensions</h2><p>Extensions run separately from ZCode's skills, commands, hooks, and MCP integrations.</p></div>
       <div class="zdp-section-actions">
         <button disabled={Boolean(busy)} onClick={() => run("check-updates", check)}>Check for updates</button>
@@ -346,6 +368,7 @@ function HealthPage({state, bridge}: {state: HostState | null; bridge: ZdpBridge
   return <div><div class="zdp-section-title"><div><h2>Host health</h2><p>Loader, native task service, and local runtime status.</p></div></div>
     <dl class="zdp-health">
       <dt>Extension host</dt><dd>{state ? "Ready" : "Loading"}</dd>
+      <dt>Host updates</dt><dd>{state?.hostUpdate.state ?? "unknown"}{state?.hostUpdate.latestVersion ? ` — ${state.hostUpdate.latestVersion}` : ""}</dd>
       <dt>ZCode task service</dt><dd>{state?.health.protocol ?? "unknown"}{state?.health.protocolError ? ` — ${state.health.protocolError}` : ""}</dd>
       <dt>Root</dt><dd>{state?.root}</dd><dt>Data</dt><dd>{state?.dataDir}</dd>
     </dl>

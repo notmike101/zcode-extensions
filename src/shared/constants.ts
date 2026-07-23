@@ -1,7 +1,8 @@
 import path from "node:path";
 
 export const HOST_NAME = "ZCode Desktop Extensions";
-export const HOST_VERSION = "0.3.5";
+export const HOST_VERSION = "0.3.6";
+export const HOST_UPDATE_URL = "https://github.com/notmike101/zcode-extensions/releases/latest/download/host-update.json";
 export const API_VERSION = 1;
 export const INSTALL_STATE_VERSION = 1;
 export const DEFAULT_ZCODE_ROOT = path.join(
@@ -37,5 +38,8 @@ export function getPaths(root = resolveZdpRoot()) {
     backups: path.join(root, "data", "backups"),
     installState: path.join(root, "data", "install-state.json"),
     bootState: path.join(root, "data", "boot-state.json"),
+    hostUpdateState: path.join(root, "data", "host-update.json"),
+    hostUpdateStaging: path.join(root, "data", ".host-update"),
+    releaseManifest: path.join(root, "release-manifest.json"),
   };
 }

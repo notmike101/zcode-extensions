@@ -2,6 +2,7 @@
 import {DEFAULT_ZCODE_ROOT, HOST_VERSION} from "../shared/constants.ts";
 import {doctor, installOrRepair, launch, uninstall} from "./installer.ts";
 import {guard} from "./guardian.ts";
+import {applyHostUpdate} from "./host-update-apply.ts";
 
 const args = process.argv.slice(2);
 const command = args[0] ?? "help";
@@ -31,6 +32,13 @@ try {
       const parent = Number(valueAfter("--parent"));
       if (!Number.isInteger(parent) || parent <= 0) throw new Error("guard requires --parent <pid>");
       await guard(parent, zcodeRoot);
+      break;
+    }
+    case "apply-update": {
+      const parent = Number(valueAfter("--parent"));
+      const root = valueAfter("--root");
+      if (!Number.isInteger(parent) || parent <= 0 || !root) throw new Error("apply-update requires --parent <pid> --root <path>");
+      await applyHostUpdate(parent, root);
       break;
     }
     case "help":

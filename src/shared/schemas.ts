@@ -143,8 +143,19 @@ export type HostState = {
   dataDir: string;
   plugins: PluginStatus[];
   catalog: CatalogExtensionStatus[];
+  hostUpdate: HostUpdateStatus;
   health: {
     protocol: "idle" | "starting" | "ready" | "error";
     protocolError?: string;
   };
+};
+
+export type HostUpdateStatus = {
+  state: "unknown" | "checking" | "up-to-date" | "available" | "downloading" | "ready" | "applying" | "incompatible" | "error";
+  currentVersion: string;
+  latestVersion?: string;
+  releaseUrl?: string;
+  checkedAt?: string;
+  installable: boolean;
+  error?: string;
 };

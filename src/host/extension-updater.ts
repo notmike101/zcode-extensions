@@ -441,7 +441,10 @@ export async function readUpdateSource(root: string) {
   }
 }
 
-async function extractArchive(archive: string, destination: string): Promise<void> {
+export async function extractArchive(archive: string, destination: string, limits: {maxEntries?: number; maxExtractedBytes?: number; label?: string} = {}): Promise<void> {
+  const maxEntries = limits.maxEntries ?? MAX_ARCHIVE_ENTRIES;
+  const maxExtractedBytes = limits.maxExtractedBytes ?? MAX_EXTRACTED_BYTES;
+  const label = limits.label ?? "Extension";
   const zip = await openZip(archive);
   const names = new Set<string>();
   let entries = 0;
@@ -463,14 +466,14 @@ async function extractArchive(archive: string, destination: string): Promise<voi
     zip.on("entry", (entry) => {
       void (async () => {
         entries += 1;
-        if (entries > MAX_ARCHIVE_ENTRIES) throw new Error("Extension archive contains too many entries");
+        if (entries > maxEntries) throw new Error(`${label} archive contains too many entries`);
         const relative = validateArchiveEntryPath(entry.fileName);
         const key = process.platform === "win32" ? relative.toLowerCase() : relative;
         if (names.has(key)) throw new Error(`Extension archive contains a duplicate path: ${relative}`);
         names.add(key);
         if (isArchiveLink(entry)) throw new Error(`Extension archive contains a link: ${relative}`);
         totalBytes += entry.uncompressedSize;
-        if (totalBytes > MAX_EXTRACTED_BYTES) throw new Error("Extension archive expands beyond the allowed size");
+        if (totalBytes > maxExtractedBytes) throw new Error(`${label} archive expands beyond the allowed size`);
         const target = path.resolve(destination, ...relative.split("/"));
         assertContained(destination, target);
         if (entry.fileName.endsWith("/")) {
@@ -536,14 +539,14 @@ function isArchiveLink(entry: yauzl.Entry): boolean {
   return (mode & 0o170000) === 0o120000;
 }
 
-function assertRemoteUrl(value: string, allowHttpLocalhost = false): void {
+export function assertRemoteUrl(value: string, allowHttpLocalhost = false): void {
   const url = new URL(value);
   if (url.protocol === "https:") return;
   if (allowHttpLocalhost && url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost")) return;
   throw new Error(`Extension updates require HTTPS: ${value}`);
 }
 
-async function fetchRemote(
+export async function fetchRemote(
   initialUrl: string,
   init: RequestInit,
   allowHttpLocalhost = false,
@@ -564,7 +567,7 @@ async function fetchRemote(
   throw new Error("Extension update redirected too many times");
 }
 
-async function readBoundedResponse(response: Response, maximumBytes: number, message: string): Promise<Buffer> {
+export async function readBoundedResponse(response: Response, maximumBytes: number, message: string): Promise<Buffer> {
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null) {
     const declared = Number(contentLength);

@@ -2,7 +2,7 @@ import {spawn} from "node:child_process";
 import {readFile} from "node:fs/promises";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
-import {app, dialog, ipcMain, powerMonitor, protocol, session, type WebContents} from "electron";
+import {app, dialog, ipcMain, powerMonitor, protocol, session, shell, type WebContents} from "electron";
 import {HOST_NAME, HOST_VERSION, getPaths, resolveZdpRoot} from "../shared/constants.ts";
 import {writeJsonAtomic} from "../shared/atomic.ts";
 import {JsonLogger} from "../shared/logger.ts";
@@ -13,6 +13,7 @@ import {ZCodeGateway} from "../protocol/zcode-gateway.ts";
 import {ExtensionZCodeService} from "../protocol/extension-service.ts";
 import {PluginManager} from "./plugin-manager.ts";
 import {observeRendererLoads} from "./renderer-loads.ts";
+import {HostUpdater} from "./host-updater.ts";
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "zdp",
@@ -41,6 +42,11 @@ let pluginManager: PluginManager;
 let initialized: Promise<void>;
 let shutdownStarted = false;
 let shutdownComplete = false;
+const hostUpdater = new HostUpdater({
+  root, zcodeRoot, zcodeVersion, logger: logger.child("host-updater"),
+  onStateChanged: () => emit("host-state-changed"),
+  allowHttpLocalhost: process.env.ZDP_ALLOW_HTTP_LOCALHOST === "1",
+});
 
 const zcodeGateway = new ZCodeGateway({
   vendorAsar: path.join(process.resourcesPath, "zcode.original.asar"),
@@ -89,6 +95,8 @@ initialized = (async () => {
     timestamp: new Date().toISOString(),
   });
   await pluginManager.initialize();
+  await hostUpdater.initialize();
+  hostUpdater.startAutomaticChecks();
   await writeJsonAtomic(paths.bootState, {
     phase: "host-ready",
     pid: process.pid,
@@ -115,6 +123,18 @@ ipcMain.handle("zdp:invoke", async (event, request: unknown) => {
   switch (method) {
     case "host:getState": return hostState();
     case "host:getLogs": return logger.tail(200);
+    case "host:checkUpdate": await hostUpdater.check(); return hostState();
+    case "host:viewUpdate": {
+      const releaseUrl = hostUpdater.status().releaseUrl;
+      if (!releaseUrl) throw new Error("No host release page is available");
+      await shell.openExternal(releaseUrl);
+      return undefined;
+    }
+    case "host:applyUpdate": {
+      await hostUpdater.prepareAndRestart(process.pid);
+      setImmediate(() => app.quit());
+      return hostState();
+    }
     case "host:choosePluginFolder": return chooseDirectory("Choose a ZCode Desktop Extension folder");
     case "host:chooseDirectory": return chooseDirectory("Choose a workspace folder");
     case "extension:checkUpdates": await pluginManager.checkUpdates(); return hostState();
@@ -210,6 +230,7 @@ app.on("before-quit", (event) => {
         await pluginManager.deactivateAll();
         await taskService.shutdown();
         await zcodeGateway.shutdown();
+        hostUpdater.dispose();
       })(),
       new Promise((resolve) => setTimeout(resolve, 10_000)),
     ]);
@@ -230,6 +251,7 @@ function hostState(): HostState {
     dataDir: paths.data,
     plugins: pluginManager.list(),
     catalog: pluginManager.catalog(),
+    hostUpdate: hostUpdater.status(),
     health: {protocol: protocolStatus, ...(protocolError ? {protocolError} : {})},
   };
 }

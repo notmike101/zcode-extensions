@@ -45,6 +45,7 @@ const outputRoot = path.resolve(valueAfter("--output") ?? path.join(root, "dist"
 const stage = path.join(outputRoot, "zcode-extensions");
 const archive = path.join(outputRoot, `${baseName}.zip`);
 const checksum = `${archive}.sha256`;
+const updateFeed = path.join(outputRoot, "host-update.json");
 
 await rm(outputRoot, {recursive: true, force: true});
 await mkdir(stage, {recursive: true});
@@ -71,11 +72,27 @@ await copyTree(
   (filePath) => !filePath.endsWith(".map") && !filePath.includes(`${path.sep}node_modules${path.sep}`),
 );
 
+const managedFiles = await collectManagedFiles(stage);
+await writeFile(path.join(stage, "release-manifest.json"), `${JSON.stringify({schemaVersion: 1, version, files: managedFiles}, null, 2)}\n`, "utf8");
+
 await compress(stage, archive);
 const digest = await sha256(archive);
+const archiveSize = (await stat(archive)).size;
 await writeFile(checksum, `${digest} *${path.basename(archive)}\n`, "utf8");
+await writeFile(updateFeed, `${JSON.stringify({
+  schemaVersion: 1,
+  version,
+  engines: {zcode: ">=3.3.6"},
+  archive: {
+    url: `https://github.com/notmike101/zcode-extensions/releases/download/${tag}/${path.basename(archive)}`,
+    sha256: digest,
+    size: archiveSize,
+  },
+  releaseUrl: `https://github.com/notmike101/zcode-extensions/releases/tag/${tag}`,
+  publishedAt: new Date().toISOString(),
+}, null, 2)}\n`, "utf8");
 
-console.log(JSON.stringify({tag, version, stage, archive, checksum, sha256: digest}, null, 2));
+console.log(JSON.stringify({tag, version, stage, archive, checksum, updateFeed, sha256: digest}, null, 2));
 
 function valueAfter(flag: string): string | undefined {
   const index = args.indexOf(flag);
@@ -128,4 +145,15 @@ async function sha256(filePath: string): Promise<string> {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(filePath)) hash.update(chunk);
   return hash.digest("hex");
+}
+
+async function collectManagedFiles(directory: string, relativeRoot = ""): Promise<Array<{path: string; sha256: string; size: number}>> {
+  const files: Array<{path: string; sha256: string; size: number}> = [];
+  for (const entry of await readdir(directory, {withFileTypes: true})) {
+    const relative = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await collectManagedFiles(target, relative));
+    else if (entry.isFile()) files.push({path: relative, sha256: await sha256(target), size: (await stat(target)).size});
+  }
+  return files.sort((left, right) => left.path.localeCompare(right.path));
 }
