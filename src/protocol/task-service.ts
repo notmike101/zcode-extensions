@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {EventEmitter} from "node:events";
 import path from "node:path";
+import semver from "semver";
 import type {JsonLogger} from "../shared/logger.ts";
 import {taskSpecSchema, type TaskSpec} from "../shared/schemas.ts";
 import type {
@@ -36,6 +37,7 @@ type TaskServiceOptions = {
   vendorAsar?: string;
   portBroker?: Pick<DesktopServicePortBroker, "current" | "onChange" | "waitForPort" | "dispose">;
   logger: JsonLogger;
+  zcodeVersion?: string;
   onHealth?: (status: "idle" | "starting" | "ready" | "error", error?: string) => void;
   connect?: (port: DesktopServicePort["port"], vendorAsar: string) => Promise<DesktopServiceConnection>;
 };
@@ -61,6 +63,7 @@ type TaskIndexService = {
   createTask: (input: Record<string, unknown>) => Promise<unknown>;
   getTaskMeta: (input: Record<string, unknown>) => Promise<unknown>;
   renameTask: (input: Record<string, unknown>) => Promise<unknown>;
+  sendPrompt: (input: Record<string, unknown>) => Promise<unknown>;
 };
 
 type BroadcastService = {
@@ -141,9 +144,16 @@ export class TaskService extends EventEmitter {
     const spec = taskSpecSchema.parse(input);
     const {broadcast, session, task} = await this.#services();
     const target = workspaceTarget(spec.workspacePath);
+    const useV4TaskFacade = supportsV4TaskFacade(this.#options.zcodeVersion);
+    await this.#options.logger.info("Creating native ZCode task", {
+      workspacePath: spec.workspacePath,
+      zcodeVersion: this.#options.zcodeVersion,
+      bridge: useV4TaskFacade ? "task-facade-v4" : "legacy-session",
+    });
     const createdTask = asRecord(await task.createTask({
       ...target,
       mode: spec.mode,
+      ...(useV4TaskFacade ? {v4Create: true} : {}),
       ...(spec.model ? {model: spec.model} : {}),
       ...(spec.thoughtLevel ? {thoughtLevel: spec.thoughtLevel} : {}),
       ...(spec.toolAllowlist ? {toolAllowlist: spec.toolAllowlist} : {}),
@@ -151,20 +161,22 @@ export class TaskService extends EventEmitter {
     }));
     const sessionId = stringValue(createdTask.taskId);
     if (!sessionId) throw new Error("ZCode did not return a task ID");
+    await this.#options.logger.info("Native ZCode task created", {
+      sessionId,
+      bridge: useV4TaskFacade ? "task-facade-v4" : "legacy-session",
+    });
 
-    const inputId = randomUUID();
+    const traceId = stringValue(createdTask.traceId) ?? randomUUID();
+    const inputId = useV4TaskFacade ? traceId : randomUUID();
     const queryId = randomUUID();
     const messageId = randomUUID();
     let resolveCompletion!: (result: TaskResult) => void;
     const completion = new Promise<TaskResult>((resolve) => { resolveCompletion = resolve; });
     let settled = false;
 
-    const subscriptionTarget = {
-      ...target,
-      sessionId,
-      deliveryKind: "desktop-continuous",
-      includeSnapshot: true,
-    };
+    const subscriptionTarget = useV4TaskFacade
+      ? {...target, taskId: sessionId, deliveryKind: "desktop-continuous"}
+      : {...target, sessionId, deliveryKind: "desktop-continuous", includeSnapshot: true};
     const run = {} as ActiveRun;
     const finish = (result: TaskResult) => {
       if (settled) return;
@@ -187,8 +199,8 @@ export class TaskService extends EventEmitter {
       interactionBlocked: false,
       finish,
       subscription: this.#gateway.subscribe(
-        "zcode-session",
-        "onDynamicSessionEvent",
+        useV4TaskFacade ? "zcode-task" : "zcode-session",
+        useV4TaskFacade ? "onDynamicTaskEvent" : "onDynamicSessionEvent",
         subscriptionTarget,
         (value) => this.#onSessionEvent(run, value),
       ),
@@ -200,18 +212,38 @@ export class TaskService extends EventEmitter {
         ? await this.#rename(task, target, sessionId, run.title) ?? createdTask
         : createdTask;
       await this.#broadcastTaskChange(broadcast, target, sessionId, "created", {task: visibleTask});
-      await session.sendPrompt({
-        ...target,
-        sessionId,
-        inputId,
-        queryId,
-        messageId,
-        content: spec.prompt,
-      });
-      if (run.title) await this.#rename(task, target, sessionId, run.title);
-      await this.#broadcastTaskChange(broadcast, target, sessionId, "prompt_sent", {
+      if (useV4TaskFacade) {
+        await this.#options.logger.info("Submitting prompt through ZCode task facade", {sessionId, traceId});
+        await task.sendPrompt({
+          taskId: sessionId,
+          traceId,
+          queryId,
+          messageId,
+          content: spec.prompt,
+        });
+        await this.#options.logger.info("ZCode task facade accepted prompt", {sessionId, traceId});
+      } else {
+        await session.sendPrompt({
+          ...target,
+          sessionId,
+          inputId,
+          queryId,
+          messageId,
+          content: spec.prompt,
+        });
+      }
+      const promptSent = () => this.#broadcastTaskChange(broadcast, target, sessionId, "prompt_sent", {
         prompt: {content: spec.prompt, messageId, sentAt: Date.now()},
       });
+      if (useV4TaskFacade) {
+        // ZCode 3.4.2 may leave follow-up task metadata calls pending after the
+        // task facade accepts a prompt. The run is active at this point, so do
+        // not keep extension callers (and their UI) waiting on notifications.
+        void promptSent();
+      } else {
+        if (run.title) await this.#rename(task, target, sessionId, run.title);
+        await promptSent();
+      }
     } catch (error) {
       this.#runs.delete(sessionId);
       run.subscription.dispose();
@@ -287,13 +319,14 @@ export class TaskService extends EventEmitter {
       run.interactionBlocked = true;
       return;
     }
-    if (envelopeType !== "session.event") return;
-    const event = asRecord(envelope.event);
+    const event = envelopeType === "session.event" ? asRecord(envelope.event) : envelope;
     const eventType = stringValue(event.type);
+    if (!eventType) return;
     const payload = asRecord(event.payload);
-    const eventInputId = stringValue(payload.inputId);
+    const eventInputId = stringValue(payload.inputId) ?? stringValue(event.inputId);
     if (eventInputId && eventInputId !== run.inputId) return;
-    if (eventType === "permission.requested" || eventType === "elicitation.requested") {
+    if (eventType === "permission.requested" || eventType === "elicitation.requested"
+      || eventType === "permission_request" || eventType === "elicitation_request") {
       run.interactionBlocked = true;
       return;
     }
@@ -301,17 +334,20 @@ export class TaskService extends EventEmitter {
       void this.#services().then(({task}) => this.#rename(task, run.target, run.sessionId, run.title!));
       return;
     }
-    if (eventType === "turn.completed") {
-      const resultType = stringValue(payload.resultType) ?? "success";
+    if (eventType === "turn.completed" || eventType === "task_complete") {
+      const resultType = stringValue(payload.resultType) ?? stringValue(event.stopReason) ?? "success";
       if (resultType === "cancelled") run.finish({sessionId: run.sessionId, status: "cancelled"});
-      else if (resultType !== "success") run.finish({sessionId: run.sessionId, status: "failed", error: resultType});
+      else if (resultType !== "success" && resultType !== "complete") {
+        run.finish({sessionId: run.sessionId, status: "failed", error: resultType});
+      }
       else run.finish({sessionId: run.sessionId, status: run.interactionBlocked ? "needs_attention" : "succeeded"});
-    } else if (eventType === "turn.failed") {
+    } else if (eventType === "turn.failed" || eventType === "task_error") {
       const error = asRecord(payload.error);
       run.finish({
         sessionId: run.sessionId,
         status: run.interactionBlocked ? "needs_attention" : "failed",
-        error: stringValue(error.message) ?? stringValue(error.detail) ?? "ZCode session turn failed",
+        error: stringValue(error.message) ?? stringValue(error.detail)
+          ?? stringValue(event.error) ?? stringValue(event.detail) ?? "ZCode session turn failed",
       });
     }
   }
@@ -373,4 +409,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function supportsV4TaskFacade(version: string | undefined): boolean {
+  return Boolean(version && semver.valid(version) && semver.gte(version, "3.4.2"));
 }

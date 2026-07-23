@@ -1,3 +1,4 @@
+import {randomUUID} from "node:crypto";
 import {readdir, readFile} from "node:fs/promises";
 import path from "node:path";
 import {pathToFileURL} from "node:url";
@@ -93,7 +94,11 @@ export class DesktopServicePortBroker {
       queueMicrotask(() => {
         const {port1, port2} = new MessageChannelMain();
         try {
-          originalPostMessage({type: "attach-service-port"}, [port2]);
+          originalPostMessage({
+            type: "attach-service-port",
+            attachmentId: `zdp-${randomUUID()}`,
+            clientMode: "desktop-continuous",
+          }, [port2]);
           this.#attach({port: port1, process: child});
         } catch (error) {
           closePort(port1);

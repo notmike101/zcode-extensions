@@ -52,7 +52,7 @@ const zcodeGateway = new ZCodeGateway({
     emit("host-state-changed");
   },
 });
-const taskService = new TaskService({gateway: zcodeGateway, logger});
+const taskService = new TaskService({gateway: zcodeGateway, logger, zcodeVersion});
 const zcodeService = new ExtensionZCodeService({gateway: zcodeGateway, taskService, hostVersion: HOST_VERSION, zcodeVersion});
 
 function emit(event: string, payload?: unknown): void {
