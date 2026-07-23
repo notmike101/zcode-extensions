@@ -43,7 +43,7 @@ Release executables are currently unsigned. Windows SmartScreen may warn before 
 3. Verify the archive:
 
    ```powershell
-   $zip = ".\zcode-extensions-v0.3.5-windows-x64.zip"
+   $zip = ".\zcode-extensions-v0.3.6-windows-x64.zip"
    $expected = (Get-Content "$zip.sha256").Split()[0].ToLowerInvariant()
    $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
    if ($actual -ne $expected) { throw "Checksum mismatch" }
@@ -52,7 +52,7 @@ Release executables are currently unsigned. Windows SmartScreen may warn before 
 4. Extract the archive to a permanent location. The ZIP contains a stable `zcode-extensions` directory:
 
    ```powershell
-   Expand-Archive .\zcode-extensions-v0.3.5-windows-x64.zip -DestinationPath D:\
+   Expand-Archive .\zcode-extensions-v0.3.6-windows-x64.zip -DestinationPath D:\
    Set-Location D:\zcode-extensions
    ```
 
@@ -107,16 +107,18 @@ Queued updates replace only the extension bundle on startup. The previous bundle
 
 ## Updating ZCode Desktop Extensions
 
-Close ZCode, download the new release, and extract it over the same parent directory:
+Packaged installs check the stable host feed at startup, every six hours, and with **Extensions → Installed → Check for updates**. When a release is available, choose **Update and restart**. The host downloads and verifies the release while ZCode remains usable, then uses a detached helper to restart, repair the loader, and roll back automatically if validation or installation fails. The updater changes only files declared by the release; `data`, extension configuration, Scheduler jobs, and unknown files are preserved.
+
+Source/development checkouts show the release notification but do not overwrite themselves. For those installs—or as a recovery path—close ZCode, download the new release, and extract it over the same parent directory:
 
 ```powershell
-Expand-Archive .\zcode-extensions-v0.3.5-windows-x64.zip -DestinationPath D:\ -Force
+Expand-Archive .\zcode-extensions-v0.3.6-windows-x64.zip -DestinationPath D:\ -Force
 Set-Location D:\zcode-extensions
 .\bin\zdp.exe repair
 .\bin\zdp.exe launch
 ```
 
-The release archive does not contain `data`, so extension configuration and Scheduler jobs remain in place. Repair preserves the untouched ZCode vendor bundle, refreshes the managed loader, and retains bounded backups.
+Release executables are currently unsigned, and updates are never installed without the explicit **Update and restart** action. Each download is bounded, path-validated, and checked against the release feed SHA-256 before ZCode exits.
 
 After a ZCode application update, allow ZCode to exit normally so the guardian can detect the new vendor `app.asar`. Run `doctor` and then `repair` if the health check reports a problem.
 
@@ -181,7 +183,7 @@ bun run build:example
 bun run build
 bun run build:sdk
 bun run pack:sdk
-bun run release:package -- --tag v0.3.5
+bun run release:package -- --tag v0.3.6
 ```
 
 See [Developing extensions](docs/extension-development.md) for the public API and [Hello Extension](examples/hello-extension) for a complete minimal project.

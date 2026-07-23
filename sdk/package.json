@@ -1,6 +1,6 @@
 {
   "name": "@notmike101/zcode-extension-sdk",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Public TypeScript SDK and authoring helpers for ZCode Desktop Extensions.",
   "license": "MIT",
   "type": "module",

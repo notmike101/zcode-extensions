@@ -72,7 +72,7 @@ export async function doctor(zcodeRoot = DEFAULT_ZCODE_ROOT, zdpRoot = resolveZd
   };
 }
 
-export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {skipProcessCheck?: boolean; manageShortcut?: boolean; stateRoot?: string} = {}): Promise<DoctorReport> {
+export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {skipProcessCheck?: boolean; manageShortcut?: boolean; stateRoot?: string; loaderVersion?: string} = {}): Promise<DoctorReport> {
   const root = options.stateRoot ?? resolveZdpRoot();
   const paths = getPaths(root);
   if (!options.skipProcessCheck) assertZCodeClosed();
@@ -119,7 +119,7 @@ export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {
     vendorAsarSha256: vendorHash,
     installedAt: existingState?.installedAt ?? now,
     ...(existingState ? {repairedAt: now} : {}),
-    loaderVersion: HOST_VERSION,
+    loaderVersion: options.loaderVersion ?? HOST_VERSION,
     ...(originalShortcut ? {shortcut: originalShortcut} : {}),
     fuses: fuseReport(wire as unknown as Record<number, FuseState>),
   });
