@@ -3,7 +3,7 @@ import {afterEach, describe, expect, test} from "bun:test";
 import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {ExtensionUpdater, renameWithRetry, validateArchiveEntryPath} from "../src/host/extension-updater.ts";
+import {ExtensionUpdater, moveOrCopyForUpdate, renameWithRetry, validateArchiveEntryPath} from "../src/host/extension-updater.ts";
 import {readExtensionManifest} from "../src/host/extension-bundle.ts";
 import {JsonLogger} from "../src/shared/logger.ts";
 import type {PluginManifest} from "../src/shared/schemas.ts";
@@ -33,6 +33,26 @@ describe("extension updater", () => {
       throw Object.assign(new Error("missing source"), {code: "ENOENT"});
     }, 3, 0)).rejects.toThrow("missing source");
     expect(attempts).toBe(1);
+  });
+
+  test("copies a verified update over a persistently locked extension directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "zdp-updater-copy-fallback-"));
+    roots.push(root);
+    const installed = path.join(root, "installed");
+    const staged = path.join(root, "staged");
+    const rollback = path.join(root, "rollback");
+    await writeBundle(installed, "0.1.5", "old");
+    await writeBundle(staged, "0.1.6", "new");
+    const lockedRename = async () => {
+      throw Object.assign(new Error("directory remains locked"), {code: "EPERM"});
+    };
+
+    await moveOrCopyForUpdate(installed, rollback, false, lockedRename, 1, 0);
+    await moveOrCopyForUpdate(staged, installed, true, lockedRename, 1, 0);
+
+    expect((await readExtensionManifest(rollback)).version).toBe("0.1.5");
+    expect((await readExtensionManifest(installed)).version).toBe("0.1.6");
+    expect(await readFile(path.join(installed, "dist", "main.cjs"), "utf8")).toContain("new");
   });
 
   test("verifies, queues, and applies an extension update on the next launch", async () => {

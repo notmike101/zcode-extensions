@@ -15,7 +15,7 @@ const server = Bun.serve({
       });
     }
     if (url.pathname === "/renderer/index.js") {
-      return new Response(await readFile(path.join(root, "runtime", "versions", "0.3.7", "renderer", "index.js")), {
+      return new Response(await readFile(path.join(root, "runtime", "versions", "0.3.8", "renderer", "index.js")), {
         headers: {"content-type": "text/javascript; charset=utf-8"},
       });
     }

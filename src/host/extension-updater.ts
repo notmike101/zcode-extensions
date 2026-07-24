@@ -1,6 +1,6 @@
 import {createHash, randomUUID} from "node:crypto";
 import {createWriteStream} from "node:fs";
-import {mkdir, readFile, readdir, rename, rm, stat, writeFile} from "node:fs/promises";
+import {cp, mkdir, readFile, readdir, rename, rm, stat, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {pipeline} from "node:stream/promises";
 import semver from "semver";
@@ -303,9 +303,9 @@ export class ExtensionUpdater {
         if (pending.phase === "applying") {
           if (await exists(destination)) {
             if (!pending.rollbackPath) throw new Error(`Missing rollback path for ${pending.pluginId}`);
-            await renameWithRetry(destination, pending.rollbackPath);
+            await moveOrCopyForUpdate(destination, pending.rollbackPath);
           }
-          if (await exists(pending.stagingRoot)) await renameWithRetry(pending.stagingRoot, destination);
+          if (await exists(pending.stagingRoot)) await moveOrCopyForUpdate(pending.stagingRoot, destination, true);
           const installed = await readExtensionManifest(destination);
           if (installed.id !== pending.pluginId || installed.version !== pending.version) {
             throw new Error(`Applied bundle identity mismatch for ${pending.pluginId}`);
@@ -324,8 +324,7 @@ export class ExtensionUpdater {
         this.#errors.set(pending.pluginId, errorText(error));
         if (pending.rollbackPath && await exists(pending.rollbackPath)) {
           const destination = path.join(this.#paths.plugins, pending.pluginId);
-          if (await exists(destination)) await rm(destination, {recursive: true, force: true});
-          await renameWithRetry(pending.rollbackPath, destination);
+          await cp(pending.rollbackPath, destination, {recursive: true, force: true});
         }
         delete this.#state.pending[pending.pluginId];
         await this.#persistState();
@@ -648,4 +647,24 @@ function isTransientRenameError(value: unknown): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function moveOrCopyForUpdate(
+  source: string,
+  destination: string,
+  mergeDestination = false,
+  operation: typeof rename = rename,
+  attempts = RENAME_RETRY_ATTEMPTS,
+  delayMs = RENAME_RETRY_DELAY_MS,
+): Promise<void> {
+  try {
+    await renameWithRetry(source, destination, operation, attempts, delayMs);
+  } catch (error) {
+    if (!isTransientRenameError(error)) throw error;
+    await cp(source, destination, {
+      recursive: true,
+      force: mergeDestination,
+      errorOnExist: !mergeDestination,
+    });
+  }
 }
