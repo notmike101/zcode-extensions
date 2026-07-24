@@ -43,7 +43,7 @@ Release executables are currently unsigned. Windows SmartScreen may warn before 
 3. Verify the archive:
 
    ```powershell
-   $zip = ".\zcode-extensions-v0.3.6-windows-x64.zip"
+   $zip = ".\zcode-extensions-v0.3.7-windows-x64.zip"
    $expected = (Get-Content "$zip.sha256").Split()[0].ToLowerInvariant()
    $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
    if ($actual -ne $expected) { throw "Checksum mismatch" }
@@ -52,7 +52,7 @@ Release executables are currently unsigned. Windows SmartScreen may warn before 
 4. Extract the archive to a permanent location. The ZIP contains a stable `zcode-extensions` directory:
 
    ```powershell
-   Expand-Archive .\zcode-extensions-v0.3.6-windows-x64.zip -DestinationPath D:\
+   Expand-Archive .\zcode-extensions-v0.3.7-windows-x64.zip -DestinationPath D:\
    Set-Location D:\zcode-extensions
    ```
 
@@ -112,7 +112,7 @@ Packaged installs check the stable host feed at startup, every six hours, and wi
 Source/development checkouts show the release notification but do not overwrite themselves. For those installs—or as a recovery path—close ZCode, download the new release, and extract it over the same parent directory:
 
 ```powershell
-Expand-Archive .\zcode-extensions-v0.3.6-windows-x64.zip -DestinationPath D:\ -Force
+Expand-Archive .\zcode-extensions-v0.3.7-windows-x64.zip -DestinationPath D:\ -Force
 Set-Location D:\zcode-extensions
 .\bin\zdp.exe repair
 .\bin\zdp.exe launch
@@ -183,7 +183,7 @@ bun run build:example
 bun run build
 bun run build:sdk
 bun run pack:sdk
-bun run release:package -- --tag v0.3.6
+bun run release:package -- --tag v0.3.7
 ```
 
 See [Developing extensions](docs/extension-development.md) for the public API and [Hello Extension](examples/hello-extension) for a complete minimal project.

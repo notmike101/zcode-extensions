@@ -31,18 +31,18 @@ describe("host updater", () => {
     await mkdir(path.join(root, "data"), {recursive: true});
     await writeFile(path.join(root, "bin", "zdp.exe"), "old helper");
     await writeFile(path.join(root, "data", "keep.txt"), "preserved");
-    await writeManifest(root, "0.3.6", [{path: "bin/zdp.exe", bytes: Buffer.from("old helper")}]);
+    await writeManifest(root, "0.3.7", [{path: "bin/zdp.exe", bytes: Buffer.from("old helper")}]);
 
     const archiveStage = path.join(root, "archive-stage", "zcode-extensions");
     const incoming = Buffer.from("new helper");
     await mkdir(path.join(archiveStage, "bin"), {recursive: true});
     await writeFile(path.join(archiveStage, "bin", "zdp.exe"), incoming);
-    await writeManifest(archiveStage, "0.3.7", [{path: "bin/zdp.exe", bytes: incoming}]);
+    await writeManifest(archiveStage, "0.3.8", [{path: "bin/zdp.exe", bytes: incoming}]);
     const archive = path.join(root, "host.zip");
     await compress(archiveStage, archive);
     const bytes = Buffer.from(await Bun.file(archive).arrayBuffer());
     const digest = hash(bytes);
-    const server = serveRelease(bytes, digest, "0.3.7", bytes.length);
+    const server = serveRelease(bytes, digest, "0.3.8", bytes.length);
     let launched: {executable: string; args: string[]} | undefined;
     const updater = createUpdater(root, `${server.url}host-update.json`, (executable, args) => { launched = {executable, args}; });
     await updater.initialize();
@@ -54,7 +54,7 @@ describe("host updater", () => {
     expect(launched?.args).toContain("4242");
     expect((await stat(launched!.executable)).isFile()).toBe(true);
     const transaction = JSON.parse(await readFile(path.join(root, "data", "host-update.json"), "utf8")) as {phase: string; targetVersion: string};
-    expect(transaction).toMatchObject({phase: "ready", targetVersion: "0.3.7"});
+    expect(transaction).toMatchObject({phase: "ready", targetVersion: "0.3.8"});
     expect(await readFile(path.join(root, "data", "keep.txt"), "utf8")).toBe("preserved");
     updater.dispose();
   });
