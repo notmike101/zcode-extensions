@@ -1,7 +1,7 @@
 import path from "node:path";
 
 export const HOST_NAME = "ZCode Desktop Extensions";
-export const HOST_VERSION = "0.3.7";
+export const HOST_VERSION = "0.3.8";
 export const HOST_UPDATE_URL = "https://github.com/notmike101/zcode-extensions/releases/latest/download/host-update.json";
 export const API_VERSION = 1;
 export const INSTALL_STATE_VERSION = 1;
