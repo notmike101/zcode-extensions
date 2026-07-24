@@ -3,7 +3,7 @@ import {afterEach, describe, expect, test} from "bun:test";
 import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {ExtensionUpdater, validateArchiveEntryPath} from "../src/host/extension-updater.ts";
+import {ExtensionUpdater, renameWithRetry, validateArchiveEntryPath} from "../src/host/extension-updater.ts";
 import {readExtensionManifest} from "../src/host/extension-bundle.ts";
 import {JsonLogger} from "../src/shared/logger.ts";
 import type {PluginManifest} from "../src/shared/schemas.ts";
@@ -17,6 +17,24 @@ afterEach(async () => {
 });
 
 describe("extension updater", () => {
+  test("retries transient Windows rename failures while applying updates", async () => {
+    let attempts = 0;
+    await renameWithRetry("installed", "rollback", async () => {
+      attempts += 1;
+      if (attempts < 3) throw Object.assign(new Error("file is temporarily locked"), {code: "EPERM"});
+    }, 3, 0);
+    expect(attempts).toBe(3);
+  });
+
+  test("does not retry permanent rename failures", async () => {
+    let attempts = 0;
+    await expect(renameWithRetry("installed", "rollback", async () => {
+      attempts += 1;
+      throw Object.assign(new Error("missing source"), {code: "ENOENT"});
+    }, 3, 0)).rejects.toThrow("missing source");
+    expect(attempts).toBe(1);
+  });
+
   test("verifies, queues, and applies an extension update on the next launch", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "zdp-updater-"));
     roots.push(root);

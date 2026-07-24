@@ -26,6 +26,8 @@ const MAX_EXTRACTED_BYTES = 200 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 2_000;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 const MAX_REDIRECTS = 5;
+const RENAME_RETRY_ATTEMPTS = 40;
+const RENAME_RETRY_DELAY_MS = 250;
 
 type InstalledExtension = {root: string; manifest: PluginManifest};
 
@@ -268,8 +270,8 @@ export class ExtensionUpdater {
     assertChild(this.#paths.trash, pending.rollbackPath);
     const destination = path.join(this.#paths.plugins, pluginId);
     const failed = path.join(this.#paths.trash, `${pluginId}-${pending.version}-failed-${timestamp()}`);
-    if (await exists(destination)) await rename(destination, failed);
-    if (await exists(pending.rollbackPath)) await rename(pending.rollbackPath, destination);
+    if (await exists(destination)) await renameWithRetry(destination, failed);
+    if (await exists(pending.rollbackPath)) await renameWithRetry(pending.rollbackPath, destination);
     delete this.#state.pending[pluginId];
     await this.#persistState();
     await rm(pending.stagingContainer, {recursive: true, force: true}).catch(() => undefined);
@@ -301,9 +303,9 @@ export class ExtensionUpdater {
         if (pending.phase === "applying") {
           if (await exists(destination)) {
             if (!pending.rollbackPath) throw new Error(`Missing rollback path for ${pending.pluginId}`);
-            await rename(destination, pending.rollbackPath);
+            await renameWithRetry(destination, pending.rollbackPath);
           }
-          if (await exists(pending.stagingRoot)) await rename(pending.stagingRoot, destination);
+          if (await exists(pending.stagingRoot)) await renameWithRetry(pending.stagingRoot, destination);
           const installed = await readExtensionManifest(destination);
           if (installed.id !== pending.pluginId || installed.version !== pending.version) {
             throw new Error(`Applied bundle identity mismatch for ${pending.pluginId}`);
@@ -323,7 +325,7 @@ export class ExtensionUpdater {
         if (pending.rollbackPath && await exists(pending.rollbackPath)) {
           const destination = path.join(this.#paths.plugins, pending.pluginId);
           if (await exists(destination)) await rm(destination, {recursive: true, force: true});
-          await rename(pending.rollbackPath, destination);
+          await renameWithRetry(pending.rollbackPath, destination);
         }
         delete this.#state.pending[pending.pluginId];
         await this.#persistState();
@@ -616,4 +618,34 @@ function timestamp(): string {
 
 function errorText(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
+}
+
+export async function renameWithRetry(
+  source: string,
+  destination: string,
+  operation: typeof rename = rename,
+  attempts = RENAME_RETRY_ATTEMPTS,
+  delayMs = RENAME_RETRY_DELAY_MS,
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await operation(source, destination);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientRenameError(error) || attempt === attempts - 1) throw error;
+      await delay(delayMs);
+    }
+  }
+  throw lastError;
+}
+
+function isTransientRenameError(value: unknown): boolean {
+  const code = (value as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EPERM" || code === "EBUSY" || code === "EACCES";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
