@@ -3,8 +3,10 @@ import {afterEach, describe, expect, test} from "bun:test";
 import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import semver from "semver";
 import {HostUpdater, type ReleaseManifest} from "../src/host/host-updater.ts";
 import {JsonLogger} from "../src/shared/logger.ts";
+import {HOST_VERSION} from "../src/shared/constants.ts";
 
 const roots: string[] = [];
 const servers: Bun.Server<unknown>[] = [];
@@ -27,22 +29,23 @@ describe("host updater", () => {
 
   test("verifies and stages a packaged update before launching the detached helper", async () => {
     const root = await tempRoot("zdp-host-package-");
+    const nextVersion = semver.inc(HOST_VERSION, "patch")!;
     await mkdir(path.join(root, "bin"), {recursive: true});
     await mkdir(path.join(root, "data"), {recursive: true});
     await writeFile(path.join(root, "bin", "zdp.exe"), "old helper");
     await writeFile(path.join(root, "data", "keep.txt"), "preserved");
-    await writeManifest(root, "0.3.8", [{path: "bin/zdp.exe", bytes: Buffer.from("old helper")}]);
+    await writeManifest(root, HOST_VERSION, [{path: "bin/zdp.exe", bytes: Buffer.from("old helper")}]);
 
     const archiveStage = path.join(root, "archive-stage", "zcode-extensions");
     const incoming = Buffer.from("new helper");
     await mkdir(path.join(archiveStage, "bin"), {recursive: true});
     await writeFile(path.join(archiveStage, "bin", "zdp.exe"), incoming);
-    await writeManifest(archiveStage, "0.3.9", [{path: "bin/zdp.exe", bytes: incoming}]);
+    await writeManifest(archiveStage, nextVersion, [{path: "bin/zdp.exe", bytes: incoming}]);
     const archive = path.join(root, "host.zip");
     await compress(archiveStage, archive);
     const bytes = Buffer.from(await Bun.file(archive).arrayBuffer());
     const digest = hash(bytes);
-    const server = serveRelease(bytes, digest, "0.3.9", bytes.length);
+    const server = serveRelease(bytes, digest, nextVersion, bytes.length);
     let launched: {executable: string; args: string[]} | undefined;
     const updater = createUpdater(root, `${server.url}host-update.json`, (executable, args) => { launched = {executable, args}; });
     await updater.initialize();
@@ -54,7 +57,7 @@ describe("host updater", () => {
     expect(launched?.args).toContain("4242");
     expect((await stat(launched!.executable)).isFile()).toBe(true);
     const transaction = JSON.parse(await readFile(path.join(root, "data", "host-update.json"), "utf8")) as {phase: string; targetVersion: string};
-    expect(transaction).toMatchObject({phase: "ready", targetVersion: "0.3.9"});
+    expect(transaction).toMatchObject({phase: "ready", targetVersion: nextVersion});
     expect(await readFile(path.join(root, "data", "keep.txt"), "utf8")).toBe("preserved");
     updater.dispose();
   });
