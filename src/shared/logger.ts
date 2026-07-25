@@ -55,9 +55,22 @@ export class JsonLogger {
   }
 }
 
-function serializeError(value: unknown): unknown {
+function serializeError(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (!value || typeof value !== "object") return value;
+  if (seen.has(value)) return "[Circular]";
+  seen.add(value);
   if (value instanceof Error) {
-    return {name: value.name, message: value.message, stack: value.stack};
+    const serialized: Record<string, unknown> = {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+    };
+    for (const key of Object.keys(value)) {
+      serialized[key] = serializeError((value as unknown as Record<string, unknown>)[key], seen);
+    }
+    if (value.cause !== undefined) serialized.cause = serializeError(value.cause, seen);
+    return serialized;
   }
-  return value;
+  if (Array.isArray(value)) return value.map((item) => serializeError(item, seen));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, serializeError(item, seen)]));
 }

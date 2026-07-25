@@ -11,7 +11,7 @@ import type {JsonLogger} from "../shared/logger.ts";
 import type {TaskService} from "../protocol/task-service.ts";
 import type {ExtensionZCodeService} from "../protocol/extension-service.ts";
 import {containedExtensionPath, readExtensionManifest, rejectExtensionLinks} from "./extension-bundle.ts";
-import {ExtensionUpdater, type AppliedUpdate} from "./extension-updater.ts";
+import {ExtensionUpdater, moveOrCopyForUpdate, renameWithRetry, type AppliedUpdate} from "./extension-updater.ts";
 
 type PluginModule = ExtensionModule;
 type Disposable = ExtensionDisposable;
@@ -129,7 +129,7 @@ export class PluginManager {
     const destination = path.join(this.#paths.plugins, manifest.id);
     await cp(sourceRoot, staging, {recursive: true, force: false, errorOnExist: true, dereference: false});
     await readExtensionManifest(staging);
-    await rename(staging, destination).catch(async (error) => {
+    await installStagedExtension(staging, destination, this.#paths.trash).catch(async (error) => {
       await rm(staging, {recursive: true, force: true});
       throw error;
     });
@@ -430,5 +430,47 @@ function clearRequireCache(root: string): void {
   for (const key of Object.keys(require.cache)) {
     const relative = path.relative(root, key);
     if (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`)) delete require.cache[key];
+  }
+}
+
+export async function installStagedExtension(
+  staging: string,
+  destination: string,
+  trashRoot: string,
+  operation: typeof rename = rename,
+  attempts?: number,
+  delayMs?: number,
+): Promise<string | undefined> {
+  const destinationExists = await stat(destination).then(() => true).catch(() => false);
+  if (!destinationExists) {
+    await renameWithRetry(staging, destination, operation, attempts, delayMs);
+    return undefined;
+  }
+
+  await mkdir(trashRoot, {recursive: true});
+  const displaced = path.join(
+    trashRoot,
+    `${path.basename(destination)}-replaced-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`,
+  );
+  await moveOrCopyForUpdate(destination, displaced, false, operation, attempts, delayMs);
+  const originalWasCopied = await stat(destination).then(() => true).catch(() => false);
+  try {
+    await moveOrCopyForUpdate(staging, destination, true, operation, attempts, delayMs);
+    await rm(staging, {recursive: true, force: true});
+    return displaced;
+  } catch (installError) {
+    try {
+      if (originalWasCopied) {
+        await cp(displaced, destination, {recursive: true, force: true});
+      } else {
+        await renameWithRetry(displaced, destination, operation, attempts, delayMs);
+      }
+    } catch (restoreError) {
+      throw new AggregateError(
+        [installError, restoreError],
+        `Extension install failed and the previous directory could not be restored from ${displaced}`,
+      );
+    }
+    throw installError;
   }
 }
