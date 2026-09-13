@@ -271,8 +271,11 @@ function manifestFor(version: string): PluginManifest {
 }
 
 async function compress(source: string, destination: string): Promise<void> {
-  const command = `Compress-Archive -LiteralPath ${quote(source)} -DestinationPath ${quote(destination)} -CompressionLevel Optimal -Force`;
-  const child = Bun.spawn(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+  const command = process.platform === "win32"
+    ? ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `Compress-Archive -LiteralPath ${quote(source)} -DestinationPath ${quote(destination)} -CompressionLevel Optimal -Force`]
+    : ["bsdtar", "-a", "-cf", destination, path.basename(source)];
+  const child = Bun.spawn(command, {
+    cwd: process.platform === "win32" ? undefined : path.dirname(source),
     stdout: "ignore",
     stderr: "inherit",
   });

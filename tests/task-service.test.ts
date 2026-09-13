@@ -5,12 +5,14 @@ import type {DesktopServiceConnection, DesktopServicePort} from "../src/protocol
 import {TaskService} from "../src/protocol/task-service.ts";
 import {JsonLogger} from "../src/shared/logger.ts";
 
+const workspacePath = path.join(os.tmpdir(), "project");
+
 describe("native desktop task service", () => {
   test("creates, titles, and completes a persistent native sidebar task", async () => {
     const harness = createHarness();
     const service = harness.service;
     const handle = await service.run({
-      workspacePath: "D:\\project",
+      workspacePath,
       prompt: "Review open work",
       title: "⏰ Morning review",
       mode: "plan",
@@ -18,11 +20,11 @@ describe("native desktop task service", () => {
 
     expect(handle.sessionId).toBe("session-1");
     expect(harness.created[0]).toMatchObject({
-      workspacePath: "D:\\project",
+      workspacePath,
       mode: "plan",
     });
     expect(harness.sent[0]).toMatchObject({
-      workspacePath: "D:\\project",
+      workspacePath,
       sessionId: "session-1",
       content: "Review open work",
     });
@@ -37,7 +39,7 @@ describe("native desktop task service", () => {
     expect(harness.broadcasts[0]).toMatchObject({
       channel: "bots:task",
       payload: {
-        workspacePath: "D:\\project",
+        workspacePath,
         taskId: "session-1",
         event: "created",
         task: {title: "⏰ Morning review"},
@@ -59,23 +61,23 @@ describe("native desktop task service", () => {
     const harness = createHarness();
     await harness.service.ensureVisible({
       sessionId: "session-old",
-      workspacePath: "D:\\project",
+      workspacePath,
       title: "⏰ Legacy review",
     });
     expect(harness.resumed[0]).toMatchObject({
       sessionId: "session-old",
-      workspacePath: "D:\\project",
+      workspacePath,
       broadcastSnapshot: true,
     });
     expect(harness.created[0]).toMatchObject({
       draftSessionId: "session-old",
-      workspacePath: "D:\\project",
+      workspacePath,
       mode: "plan",
     });
     expect(harness.renamed.at(-1)).toMatchObject({taskId: "session-old", title: "⏰ Legacy review"});
     expect(harness.broadcasts[0]?.payload.event).toBe("created");
 
-    const run = await harness.service.run({workspacePath: "D:\\project", prompt: "Ask if needed", mode: "plan"});
+    const run = await harness.service.run({workspacePath, prompt: "Ask if needed", mode: "plan"});
     harness.emit({type: "session.event", event: {type: "permission.requested", payload: {inputId: harness.sent[0]!.inputId}}});
     harness.emit({
       type: "session.event",
@@ -88,13 +90,13 @@ describe("native desktop task service", () => {
   test("uses the ZCode 3.4.2 V4 task facade and accepts direct terminal events", async () => {
     const harness = createHarness("3.4.2");
     const handle = await harness.service.run({
-      workspacePath: "D:\\project",
+      workspacePath,
       prompt: "Reply with ready",
       title: "V4 task",
       mode: "plan",
     });
 
-    expect(harness.created[0]).toMatchObject({workspacePath: "D:\\project", mode: "plan", v4Create: true});
+    expect(harness.created[0]).toMatchObject({workspacePath, mode: "plan", v4Create: true});
     expect(harness.sentVia).toEqual(["task"]);
     expect(harness.sent[0]).toMatchObject({
       taskId: "session-1",
@@ -106,7 +108,7 @@ describe("native desktop task service", () => {
       channel: "zcode-task",
       event: "onDynamicTaskEvent",
       argument: {
-        workspacePath: "D:\\project",
+        workspacePath,
         taskId: "session-1",
         deliveryKind: "desktop-continuous",
       },
@@ -121,7 +123,7 @@ describe("native desktop task service", () => {
   test("returns the V4 run handle immediately after prompt acceptance", async () => {
     const harness = createHarness("3.4.2", true);
     const handle = await Promise.race([
-      harness.service.run({workspacePath: "D:\\project", prompt: "Reply with ready", title: "V4 task", mode: "plan"}),
+      harness.service.run({workspacePath, prompt: "Reply with ready", title: "V4 task", mode: "plan"}),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("run handle did not return")), 100)),
     ]);
 
@@ -134,14 +136,14 @@ describe("native desktop task service", () => {
 
   test("maps direct V4 interaction, failure, and cancellation outcomes", async () => {
     const attention = createHarness("3.4.2");
-    const attentionRun = await attention.service.run({workspacePath: "D:\\project", prompt: "Ask", mode: "plan"});
+    const attentionRun = await attention.service.run({workspacePath, prompt: "Ask", mode: "plan"});
     attention.emit({type: "permission_request"});
     attention.emit({type: "task_complete", inputId: "trace-1", stopReason: "complete"});
     await expect(attentionRun.completion).resolves.toEqual({sessionId: "session-1", status: "needs_attention"});
     await attention.service.shutdown();
 
     const failed = createHarness("3.4.2");
-    const failedRun = await failed.service.run({workspacePath: "D:\\project", prompt: "Fail", mode: "plan"});
+    const failedRun = await failed.service.run({workspacePath, prompt: "Fail", mode: "plan"});
     failed.emit({type: "task_error", inputId: "trace-1", error: "provider unavailable"});
     await expect(failedRun.completion).resolves.toEqual({
       sessionId: "session-1",
@@ -151,15 +153,15 @@ describe("native desktop task service", () => {
     await failed.service.shutdown();
 
     const cancelled = createHarness("3.4.2");
-    const cancelledRun = await cancelled.service.run({workspacePath: "D:\\project", prompt: "Wait", mode: "plan"});
+    const cancelledRun = await cancelled.service.run({workspacePath, prompt: "Wait", mode: "plan"});
     cancelled.emit({type: "task_complete", inputId: "trace-1", stopReason: "cancelled"});
     await expect(cancelledRun.completion).resolves.toEqual({sessionId: "session-1", status: "cancelled"});
 
     const stopped = createHarness("3.4.2");
-    const stoppedRun = await stopped.service.run({workspacePath: "D:\\project", prompt: "Wait", mode: "plan"});
+    const stoppedRun = await stopped.service.run({workspacePath, prompt: "Wait", mode: "plan"});
     await stoppedRun.stop();
     await expect(stoppedRun.completion).resolves.toEqual({sessionId: "session-1", status: "cancelled"});
-    expect(stopped.stopped[0]).toMatchObject({sessionId: "session-1", workspacePath: "D:\\project"});
+    expect(stopped.stopped[0]).toMatchObject({sessionId: "session-1", workspacePath});
     await cancelled.service.shutdown();
     await stopped.service.shutdown();
   });
@@ -167,7 +169,7 @@ describe("native desktop task service", () => {
   test("stops and cleans up a V4 run after its timeout", async () => {
     const harness = createHarness("3.4.2");
     const run = await harness.service.run({
-      workspacePath: "D:\\project",
+      workspacePath,
       prompt: "Wait",
       mode: "plan",
       timeoutMs: 5,
@@ -178,7 +180,7 @@ describe("native desktop task service", () => {
       status: "timed_out",
       error: "Task exceeded 5 ms",
     });
-    expect(harness.stopped[0]).toMatchObject({sessionId: "session-1", workspacePath: "D:\\project"});
+    expect(harness.stopped[0]).toMatchObject({sessionId: "session-1", workspacePath});
     expect(harness.subscriptionDisposed).toBe(1);
     await harness.service.shutdown();
   });
