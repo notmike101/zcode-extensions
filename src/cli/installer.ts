@@ -1,11 +1,11 @@
 import {createHash} from "node:crypto";
-import {createReadStream} from "node:fs";
+import {createReadStream, readdirSync, readlinkSync} from "node:fs";
 import {copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {spawn, spawnSync} from "node:child_process";
 import {extractFile} from "@electron/asar";
 import {FuseState, FuseV1Options, getCurrentFuseWire} from "@electron/fuses";
-import {DEFAULT_ZCODE_ROOT, HOST_VERSION, getPaths, resolveZdpRoot} from "../shared/constants.ts";
+import {DEFAULT_ZCODE_ROOT, HOST_VERSION, ZDP_LAUNCHER_EXECUTABLE, getPaths, getZCodeLayout, resolveZdpRoot} from "../shared/constants.ts";
 import {writeJsonAtomic} from "../shared/atomic.ts";
 import {installStateSchema, type InstallState} from "../shared/schemas.ts";
 import {defaultShortcutPath, readShortcut, restoreShortcut, writeLauncherShortcut} from "./shortcut.ts";
@@ -29,9 +29,10 @@ export type DoctorReport = {
 export async function doctor(zcodeRoot = DEFAULT_ZCODE_ROOT, zdpRoot = resolveZdpRoot()): Promise<DoctorReport> {
   const root = zdpRoot;
   const paths = getPaths(root);
+  const layout = getZCodeLayout(zcodeRoot);
   const errors: string[] = [];
-  const resources = path.join(zcodeRoot, "resources");
-  const exe = path.join(zcodeRoot, "ZCode.exe");
+  const resources = layout.resources;
+  const exe = layout.electronExecutable;
   const appAsar = path.join(resources, "app.asar");
   const originalAsar = path.join(resources, "zcode.original.asar");
   const vendorAsar = await exists(originalAsar) ? originalAsar : await exists(appAsar) ? appAsar : undefined;
@@ -56,7 +57,7 @@ export async function doctor(zcodeRoot = DEFAULT_ZCODE_ROOT, zdpRoot = resolveZd
   const runtimePresent = await exists(paths.runtimeBootstrap) && await exists(paths.runtimeCurrent);
   const installState = await readInstallState(paths.installState);
   const shortcut = await readShortcut().catch(() => undefined);
-  const shortcutManaged = Boolean(shortcut && path.resolve(shortcut.originalTarget) === path.resolve(path.join(paths.bin, "zdp-launcher.exe")));
+  const shortcutManaged = Boolean(shortcut && path.resolve(shortcut.originalTarget) === path.resolve(path.join(paths.bin, ZDP_LAUNCHER_EXECUTABLE)));
   return {
     ok: errors.length === 0 && runtimePresent,
     installed: loaderPresent && Boolean(await exists(originalAsar)),
@@ -75,13 +76,16 @@ export async function doctor(zcodeRoot = DEFAULT_ZCODE_ROOT, zdpRoot = resolveZd
 export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {skipProcessCheck?: boolean; manageShortcut?: boolean; stateRoot?: string; loaderVersion?: string} = {}): Promise<DoctorReport> {
   const root = options.stateRoot ?? resolveZdpRoot();
   const paths = getPaths(root);
-  if (!options.skipProcessCheck) assertZCodeClosed();
+  if (!options.skipProcessCheck) assertZCodeClosed(zcodeRoot);
   if (!await exists(paths.runtimeBootstrap) || !await exists(paths.runtimeCurrent)) throw new Error("Build the ZDP runtime before installing");
   const before = await doctor(zcodeRoot, root);
   if (before.errors.length) throw new Error(`ZCode is not patchable:\n- ${before.errors.join("\n- ")}`);
-  const resources = path.join(zcodeRoot, "resources");
+  const layout = getZCodeLayout(zcodeRoot);
+  const resources = layout.resources;
   const appAsar = path.join(resources, "app.asar");
   const originalAsar = path.join(resources, "zcode.original.asar");
+  const appUnpacked = `${appAsar}.unpacked`;
+  const originalUnpacked = `${originalAsar}.unpacked`;
   let vendorAsar: string;
   if (await exists(appAsar)) {
     const incomingPackage = readPackage(appAsar);
@@ -90,8 +94,10 @@ export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {
       const previousPackage = readPackage(originalAsar);
       await backupVendor(originalAsar, previousPackage.version, paths.backups);
       await rm(originalAsar, {force: true});
+      await rm(originalUnpacked, {recursive: true, force: true});
     }
     await rename(appAsar, originalAsar);
+    if (await exists(appUnpacked)) await rename(appUnpacked, originalUnpacked);
     vendorAsar = originalAsar;
   } else if (await exists(originalAsar)) {
     vendorAsar = originalAsar;
@@ -107,9 +113,9 @@ export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {
   const manageShortcut = options.manageShortcut ?? true;
   const shortcutPath = existingState?.shortcut?.path ?? defaultShortcutPath();
   const originalShortcut = manageShortcut ? existingState?.shortcut ?? await readShortcut(shortcutPath) : undefined;
-  const launcher = path.join(paths.bin, "zdp-launcher.exe");
-  if (manageShortcut && await exists(launcher)) await writeLauncherShortcut(shortcutPath, launcher, root, path.join(zcodeRoot, "ZCode.exe"));
-  const wire = await getCurrentFuseWire(path.join(zcodeRoot, "ZCode.exe"));
+  const launcher = path.join(paths.bin, ZDP_LAUNCHER_EXECUTABLE);
+  if (manageShortcut && await exists(launcher)) await writeLauncherShortcut(shortcutPath, launcher, root, layout.electronExecutable);
+  const wire = await getCurrentFuseWire(layout.electronExecutable);
   const now = new Date().toISOString();
   const state: InstallState = installStateSchema.parse({
     schemaVersion: 1,
@@ -131,20 +137,26 @@ export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {
 export async function uninstall(zcodeRoot = DEFAULT_ZCODE_ROOT, purgeData = false, options: {skipProcessCheck?: boolean; manageShortcut?: boolean; stateRoot?: string} = {}): Promise<void> {
   const root = options.stateRoot ?? resolveZdpRoot();
   const paths = getPaths(root);
-  if (!options.skipProcessCheck) assertZCodeClosed();
-  const resources = path.join(zcodeRoot, "resources");
+  if (!options.skipProcessCheck) assertZCodeClosed(zcodeRoot);
+  const resources = getZCodeLayout(zcodeRoot).resources;
   const appDir = path.join(resources, "app");
   const appAsar = path.join(resources, "app.asar");
   const originalAsar = path.join(resources, "zcode.original.asar");
+  const appUnpacked = `${appAsar}.unpacked`;
+  const originalUnpacked = `${originalAsar}.unpacked`;
   if (await exists(appDir)) {
     if (!await isManagedLoader(appDir)) throw new Error(`Refusing to remove unmanaged directory: ${appDir}`);
     await rm(appDir, {recursive: true, force: true});
   }
-  if (!await exists(appAsar) && await exists(originalAsar)) await rename(originalAsar, appAsar);
+  if (!await exists(appAsar) && await exists(originalAsar)) {
+    await rename(originalAsar, appAsar);
+    if (await exists(originalUnpacked)) await rename(originalUnpacked, appUnpacked);
+  }
   else if (await exists(appAsar) && await exists(originalAsar)) {
     const previousPackage = readPackage(originalAsar);
     await backupVendor(originalAsar, previousPackage.version, paths.backups);
     await rm(originalAsar, {force: true});
+    await rm(originalUnpacked, {recursive: true, force: true});
   }
   const state = await readInstallState(paths.installState);
   if ((options.manageShortcut ?? true) && state?.shortcut) await restoreShortcut(state.shortcut);
@@ -153,9 +165,10 @@ export async function uninstall(zcodeRoot = DEFAULT_ZCODE_ROOT, purgeData = fals
   if (purgeData) await rm(paths.data, {recursive: true, force: true});
 }
 
-export async function launch(zcodeRoot = DEFAULT_ZCODE_ROOT, safe = false): Promise<void> {
-  if (!isZCodeRunning()) await installOrRepair(zcodeRoot);
-  const child = spawn(path.join(zcodeRoot, "ZCode.exe"), [], {
+export async function launch(zcodeRoot = DEFAULT_ZCODE_ROOT, safe = false, args: string[] = []): Promise<void> {
+  if (!isZCodeRunning(zcodeRoot)) await installOrRepair(zcodeRoot);
+  const layout = getZCodeLayout(zcodeRoot);
+  const child = spawn(layout.launchExecutable, [...layout.launchArgs, ...args], {
     cwd: zcodeRoot,
     detached: true,
     stdio: "ignore",
@@ -165,14 +178,24 @@ export async function launch(zcodeRoot = DEFAULT_ZCODE_ROOT, safe = false): Prom
   child.unref();
 }
 
-export function assertZCodeClosed(): void {
-  if (isZCodeRunning()) throw new Error("ZCode is running. Close it before install, repair, or uninstall.");
+export function assertZCodeClosed(zcodeRoot = DEFAULT_ZCODE_ROOT): void {
+  if (isZCodeRunning(zcodeRoot)) throw new Error("ZCode is running. Close it before install, repair, or uninstall.");
 }
 
-export function isZCodeRunning(): boolean {
-  if (process.platform !== "win32") return false;
-  const result = spawnSync("tasklist.exe", ["/FI", "IMAGENAME eq ZCode.exe", "/NH", "/FO", "CSV"], {encoding: "utf8", windowsHide: true});
-  return /"ZCode\.exe"/i.test(result.stdout ?? "");
+export function isZCodeRunning(zcodeRoot = DEFAULT_ZCODE_ROOT): boolean {
+  if (process.platform === "win32") {
+    const result = spawnSync("tasklist.exe", ["/FI", "IMAGENAME eq ZCode.exe", "/NH", "/FO", "CSV"], {encoding: "utf8", windowsHide: true});
+    return /"ZCode\.exe"/i.test(result.stdout ?? "");
+  }
+  if (process.platform !== "linux") return false;
+  const executable = path.resolve(getZCodeLayout(zcodeRoot).electronExecutable);
+  try {
+    return readdirSync("/proc").some((entry) => {
+      if (!/^\d+$/.test(entry) || Number(entry) === process.pid) return false;
+      try { return path.resolve(readlinkSync(path.join("/proc", entry, "exe"))) === executable; }
+      catch { return false; }
+    });
+  } catch { return false; }
 }
 
 export async function readInstallState(filePath = getPaths(resolveZdpRoot()).installState): Promise<InstallState | undefined> {
@@ -216,6 +239,9 @@ async function backupVendor(source: string, version: string, backupRoot: string)
   const target = path.join(directory, "app.asar");
   await mkdir(directory, {recursive: true});
   if (!await exists(target)) await copyFile(source, target);
+  const unpacked = `${source}.unpacked`;
+  const backupUnpacked = path.join(directory, "app.asar.unpacked");
+  if (await exists(unpacked) && !await exists(backupUnpacked)) await cp(unpacked, backupUnpacked, {recursive: true});
   await writeJsonAtomic(path.join(directory, "metadata.json"), {version, sha256: hash, backedUpAt: new Date().toISOString()});
   return target;
 }

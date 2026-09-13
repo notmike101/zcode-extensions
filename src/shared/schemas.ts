@@ -96,6 +96,7 @@ export const installStateSchema = z.object({
     originalArguments: z.string(),
     originalWorkingDirectory: z.string(),
     originalIconLocation: z.string(),
+    originalContents: z.string().optional(),
   }).optional(),
   fuses: z.record(z.string(), z.string()),
 }).strict();

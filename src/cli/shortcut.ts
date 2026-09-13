@@ -1,4 +1,6 @@
 import {spawn} from "node:child_process";
+import {mkdir, readFile, writeFile} from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 export type ShortcutState = {
@@ -7,13 +9,32 @@ export type ShortcutState = {
   originalArguments: string;
   originalWorkingDirectory: string;
   originalIconLocation: string;
+  originalContents?: string;
 };
 
 export function defaultShortcutPath(): string {
+  if (process.platform !== "win32") return path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"), "applications", "zcode.desktop");
   return path.join(process.env.APPDATA ?? "", "Microsoft", "Windows", "Start Menu", "Programs", "ZCode.lnk");
 }
 
 export async function readShortcut(shortcutPath = defaultShortcutPath()): Promise<ShortcutState | undefined> {
+  if (process.platform !== "win32") {
+    const originalContents = await readFile(shortcutPath, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (originalContents === undefined) return undefined;
+    const exec = /^Exec=(.*)$/m.exec(originalContents)?.[1]?.trim() ?? "";
+    const parsed = parseDesktopExec(exec);
+    return {
+      path: shortcutPath,
+      originalTarget: parsed.target,
+      originalArguments: parsed.arguments,
+      originalWorkingDirectory: /^Path=(.*)$/m.exec(originalContents)?.[1]?.trim() ?? "",
+      originalIconLocation: /^Icon=(.*)$/m.exec(originalContents)?.[1]?.trim() ?? "",
+      originalContents,
+    };
+  }
   const script = `
 $ErrorActionPreference='Stop'
 $shortcutPath=$env:ZDP_SHORTCUT_PATH
@@ -30,6 +51,16 @@ $sc=$ws.CreateShortcut($shortcutPath)
 }
 
 export async function writeLauncherShortcut(shortcutPath: string, launcher: string, workingDirectory: string, iconPath: string): Promise<void> {
+  if (process.platform !== "win32") {
+    const existing = await readFile(shortcutPath, "utf8").catch(() => "[Desktop Entry]\nName=ZCode\nType=Application\nTerminal=false\nCategories=Development;\nMimeType=x-scheme-handler/zcode;\n");
+    const exec = `Exec=${quoteDesktopValue(launcher)} %U`;
+    const tryExec = `TryExec=${launcher}`;
+    let contents = /^Exec=.*$/m.test(existing) ? existing.replace(/^Exec=.*$/m, exec) : `${existing.trimEnd()}\n${exec}\n`;
+    contents = /^TryExec=.*$/m.test(contents) ? contents.replace(/^TryExec=.*$/m, tryExec) : `${contents.trimEnd()}\n${tryExec}\n`;
+    await mkdir(path.dirname(shortcutPath), {recursive: true});
+    await writeFile(shortcutPath, contents, "utf8");
+    return;
+  }
   const script = `
 $ErrorActionPreference='Stop'
 $ws=New-Object -ComObject WScript.Shell
@@ -50,6 +81,12 @@ $sc.Save()
 }
 
 export async function restoreShortcut(state: ShortcutState): Promise<void> {
+  if (process.platform !== "win32") {
+    if (state.originalContents === undefined) throw new Error("The original desktop entry was not preserved");
+    await mkdir(path.dirname(state.path), {recursive: true});
+    await writeFile(state.path, state.originalContents, "utf8");
+    return;
+  }
   const script = `
 $ErrorActionPreference='Stop'
 $ws=New-Object -ComObject WScript.Shell
@@ -68,6 +105,18 @@ $sc.Save()
     ZDP_ICON: state.originalIconLocation,
   });
   if (result.code !== 0) throw new Error(`Failed to restore ZCode shortcut: ${result.stderr || result.stdout}`);
+}
+
+function quoteDesktopValue(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
+}
+
+function parseDesktopExec(value: string): {target: string; arguments: string} {
+  if (!value) return {target: "", arguments: ""};
+  const quoted = /^"((?:\\.|[^"])*)"\s*(.*)$/.exec(value);
+  if (quoted) return {target: quoted[1]!.replace(/\\([\\"])/g, "$1"), arguments: quoted[2] ?? ""};
+  const plain = /^(\S+)\s*(.*)$/.exec(value);
+  return {target: plain?.[1] ?? "", arguments: plain?.[2] ?? ""};
 }
 
 async function powershell(script: string, env: Record<string, string>, allowNonzero = false): Promise<{code: number; stdout: string; stderr: string}> {

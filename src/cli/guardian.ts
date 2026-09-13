@@ -11,7 +11,7 @@ export async function guard(parentPid: number, zcodeRoot: string): Promise<void>
   let previousSize = -1;
   const deadline = Date.now() + 5 * 60_000;
   while (Date.now() < deadline) {
-    if (isZCodeRunning()) { await delay(1_000); continue; }
+    if (isZCodeRunning(zcodeRoot)) { await delay(1_000); continue; }
     const size = await stat(appAsar).then((value) => value.size).catch(() => -1);
     if (size === previousSize) stableSamples += 1;
     else stableSamples = 0;
@@ -19,7 +19,7 @@ export async function guard(parentPid: number, zcodeRoot: string): Promise<void>
     if (stableSamples >= 2) break;
     await delay(1_000);
   }
-  if (!isZCodeRunning()) await installOrRepair(zcodeRoot, {skipProcessCheck: true}).catch(() => undefined);
+  if (!isZCodeRunning(zcodeRoot)) await installOrRepair(zcodeRoot, {skipProcessCheck: true}).catch(() => undefined);
 }
 
 async function hostUpdatePending(): Promise<boolean> {

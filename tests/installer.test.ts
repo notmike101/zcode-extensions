@@ -6,12 +6,29 @@ import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {doctor, installOrRepair, uninstall} from "../src/cli/installer.ts";
+import {DEFAULT_ZCODE_ROOT, ZDP_EXECUTABLE, ZDP_LAUNCHER_EXECUTABLE, getZCodeLayout} from "../src/shared/constants.ts";
 
 const temporaryDirectories: string[] = [];
 const ELECTRON_FUSE_SENTINEL = "dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX";
 afterEach(async () => { await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, {recursive: true, force: true}))); });
 
-describe("Windows loader installer", () => {
+describe("loader installer", () => {
+  test("keeps platform-specific executable names and layout", () => {
+    const layout = getZCodeLayout("/zcode-root");
+    if (process.platform === "win32") {
+      expect(DEFAULT_ZCODE_ROOT).toContain("Programs");
+      expect(ZDP_EXECUTABLE).toBe("zdp.exe");
+      expect(ZDP_LAUNCHER_EXECUTABLE).toBe("zdp-launcher.exe");
+      expect(layout.electronExecutable).toEndWith("ZCode.exe");
+      expect(layout.launchArgs).toEqual([]);
+    } else {
+      expect(ZDP_EXECUTABLE).toBe("zdp");
+      expect(ZDP_LAUNCHER_EXECUTABLE).toBe("zdp-launcher");
+      expect(layout.electronExecutable).toEndWith("zcode");
+      expect(layout.launchArgs).toEqual(["--no-sandbox"]);
+    }
+  });
+
   test("installs, repairs idempotently, and restores the exact vendor ASAR", async () => {
     const fixture = await mkdtemp(path.join(os.tmpdir(), "zdp-installer-"));
     temporaryDirectories.push(fixture);
@@ -20,7 +37,7 @@ describe("Windows loader installer", () => {
     const zdpRoot = path.join(fixture, "zdp");
     await mkdir(resources, {recursive: true});
     await mkdir(path.join(zdpRoot, "runtime"), {recursive: true});
-    await writeFile(path.join(zcodeRoot, "ZCode.exe"), electronFuseFixture());
+    await writeFile(getZCodeLayout(zcodeRoot).electronExecutable, electronFuseFixture());
     const vendorApp = path.join(fixture, "vendor-app");
     await mkdir(path.join(vendorApp, "out", "main"), {recursive: true});
     await writeFile(path.join(vendorApp, "package.json"), JSON.stringify({
@@ -31,6 +48,8 @@ describe("Windows loader installer", () => {
     }));
     await writeFile(path.join(vendorApp, "out", "main", "index.js"), "export {};\n");
     await createPackage(vendorApp, path.join(resources, "app.asar"));
+    await mkdir(path.join(resources, "app.asar.unpacked"), {recursive: true});
+    await writeFile(path.join(resources, "app.asar.unpacked", "native.node"), "native");
     await writeFile(path.join(zdpRoot, "runtime", "bootstrap.mjs"), "export {};\n");
     await writeFile(path.join(zdpRoot, "runtime", "current.json"), '{"version":"test"}\n');
     const originalHash = await sha256(path.join(resources, "app.asar"));
@@ -39,6 +58,7 @@ describe("Windows loader installer", () => {
     expect(installed.installed).toBe(true);
     expect(await exists(path.join(resources, "app.asar"))).toBe(false);
     expect(await exists(path.join(resources, "zcode.original.asar"))).toBe(true);
+    expect(await readFile(path.join(resources, "zcode.original.asar.unpacked", "native.node"), "utf8")).toBe("native");
     expect(JSON.parse(await readFile(path.join(resources, "app", "package.json"), "utf8")).zdpLoader).toBe(true);
     expect(await sha256(path.join(resources, "zcode.original.asar"))).toBe(originalHash);
 
@@ -49,6 +69,7 @@ describe("Windows loader installer", () => {
     await uninstall(zcodeRoot, false, {skipProcessCheck: true, manageShortcut: false, stateRoot: zdpRoot});
     expect(await exists(path.join(resources, "app"))).toBe(false);
     expect(await exists(path.join(resources, "zcode.original.asar"))).toBe(false);
+    expect(await readFile(path.join(resources, "app.asar.unpacked", "native.node"), "utf8")).toBe("native");
     expect(await sha256(path.join(resources, "app.asar"))).toBe(originalHash);
   }, 60_000);
 });

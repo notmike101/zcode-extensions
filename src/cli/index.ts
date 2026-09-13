@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 import {DEFAULT_ZCODE_ROOT, HOST_VERSION} from "../shared/constants.ts";
-import {doctor, installOrRepair, launch, uninstall} from "./installer.ts";
+import {doctor, installOrRepair, launch, readInstallState, uninstall} from "./installer.ts";
 import {guard} from "./guardian.ts";
 import {applyHostUpdate} from "./host-update-apply.ts";
 
 const args = process.argv.slice(2);
 const command = args[0] ?? "help";
-const zcodeRoot = valueAfter("--zcode") ?? DEFAULT_ZCODE_ROOT;
+const installed = await readInstallState();
+const zcodeRoot = valueAfter("--zcode") ?? installed?.zcodeRoot ?? DEFAULT_ZCODE_ROOT;
 
 try {
   switch (command) {
@@ -23,7 +24,7 @@ try {
       console.log(`Vendor ASAR: ${report.vendorAsarSha256}`);
       break;
     }
-    case "launch": await launch(zcodeRoot, args.includes("--safe")); break;
+    case "launch": await launch(zcodeRoot, args.includes("--safe"), launchArguments()); break;
     case "uninstall":
       await uninstall(zcodeRoot, args.includes("--purge-data"));
       console.log(`Uninstalled ZCode Desktop Extensions${args.includes("--purge-data") ? " and removed its data" : " (data preserved)"}.`);
@@ -54,6 +55,17 @@ try {
 function valueAfter(flag: string): string | undefined {
   const index = args.indexOf(flag);
   return index >= 0 ? args[index + 1] : undefined;
+}
+
+function launchArguments(): string[] {
+  const result: string[] = [];
+  for (let index = 1; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === "--safe") continue;
+    if (value === "--zcode") { index += 1; continue; }
+    if (value) result.push(value);
+  }
+  return result;
 }
 
 function printHelp(): void {
