@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {applyHostUpdate} from "../src/cli/host-update-apply.ts";
 import type {ReleaseManifest} from "../src/host/host-updater.ts";
+import {getZCodeLayout} from "../src/shared/constants.ts";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, {recursive: true, force: true}))));
@@ -26,7 +27,7 @@ describe("host update apply transaction", () => {
     expect(await readFile(path.join(fixture.root, "unknown.txt"), "utf8")).toBe("unknown");
     expect(JSON.parse(await readFile(path.join(fixture.root, "runtime", "current.json"), "utf8"))).toEqual({version: "0.3.7", previousVersion: "0.3.6"});
     expect(repairedVersion).toBe("0.3.7");
-    expect(launched).toBe(path.join(fixture.zcodeRoot, "ZCode.exe"));
+    expect(launched).toBe(getZCodeLayout(fixture.zcodeRoot).launchExecutable);
     expect(await exists(path.join(fixture.root, "data", "host-update.json"))).toBe(false);
     expect(await readFile(path.join(fixture.root, "data", ".host-update", "backup", "0.3.6", "bin", "zdp.exe"), "utf8")).toBe("old");
   });

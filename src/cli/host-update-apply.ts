@@ -2,7 +2,7 @@ import {copyFile, mkdir, readFile, rm, stat} from "node:fs/promises";
 import path from "node:path";
 import {spawn} from "node:child_process";
 import {writeJsonAtomic} from "../shared/atomic.ts";
-import {getPaths} from "../shared/constants.ts";
+import {getPaths, getZCodeLayout} from "../shared/constants.ts";
 import {hostUpdateTransactionSchema, releaseManifestSchema, safeManagedPath, verifyManagedFiles, type ReleaseManifest} from "../host/host-updater.ts";
 import {installOrRepair, isZCodeRunning} from "./installer.ts";
 
@@ -53,8 +53,9 @@ export async function applyHostUpdate(parentPid: number, root: string, dependenc
     await writeJsonAtomic(paths.hostUpdateState, {...transaction, phase: "failed", error: errorText(error)}).catch(() => undefined);
     await repair(transaction.zcodeRoot, {skipProcessCheck: true, stateRoot: root}).catch(() => undefined);
   }
-  if (dependencies.launch) dependencies.launch(path.join(transaction.zcodeRoot, "ZCode.exe"));
-  else spawn(path.join(transaction.zcodeRoot, "ZCode.exe"), [], {detached: true, stdio: "ignore", windowsHide: true}).unref();
+  const layout = getZCodeLayout(transaction.zcodeRoot);
+  if (dependencies.launch) dependencies.launch(layout.launchExecutable);
+  else spawn(layout.launchExecutable, layout.launchArgs, {detached: true, stdio: "ignore", windowsHide: true}).unref();
 }
 
 async function backupManaged(root: string, backup: string, manifest: ReleaseManifest): Promise<void> {
@@ -69,10 +70,10 @@ async function backupManaged(root: string, backup: string, manifest: ReleaseMani
 }
 
 async function installManaged(root: string, staging: string, current: ReleaseManifest, incoming: ReleaseManifest): Promise<void> {
-  const incomingPaths = new Set(incoming.files.map((file) => safeManagedPath(file.path).toLowerCase()));
+  const incomingPaths = new Set(incoming.files.map((file) => managedPathKey(safeManagedPath(file.path))));
   for (const file of current.files) {
     const relative = safeManagedPath(file.path);
-    if (!incomingPaths.has(relative.toLowerCase())) await rm(path.join(root, ...relative.split("/")), {force: true});
+    if (!incomingPaths.has(managedPathKey(relative))) await rm(path.join(root, ...relative.split("/")), {force: true});
   }
   for (const file of incoming.files) {
     const relative = safeManagedPath(file.path);
@@ -83,10 +84,10 @@ async function installManaged(root: string, staging: string, current: ReleaseMan
 }
 
 async function restoreManaged(root: string, backup: string, current: ReleaseManifest, incoming: ReleaseManifest): Promise<void> {
-  const currentPaths = new Set(current.files.map((file) => safeManagedPath(file.path).toLowerCase()));
+  const currentPaths = new Set(current.files.map((file) => managedPathKey(safeManagedPath(file.path))));
   for (const file of incoming.files) {
     const relative = safeManagedPath(file.path);
-    if (!currentPaths.has(relative.toLowerCase())) await rm(path.join(root, ...relative.split("/")), {force: true});
+    if (!currentPaths.has(managedPathKey(relative))) await rm(path.join(root, ...relative.split("/")), {force: true});
   }
   for (const file of current.files) {
     const relative = safeManagedPath(file.path);
@@ -120,6 +121,7 @@ function isProcessAlive(pid: number): boolean { try { process.kill(pid, 0); retu
 function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 async function exists(value: string): Promise<boolean> { return stat(value).then(() => true).catch(() => false); }
 function errorText(value: unknown): string { return value instanceof Error ? value.message : String(value); }
+function managedPathKey(value: string): string { return process.platform === "win32" ? value.toLowerCase() : value; }
 function assertChild(root: string, target: string): void {
   const relative = path.relative(path.resolve(root), path.resolve(target));
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`Update payload is outside host staging: ${target}`);

@@ -1,13 +1,13 @@
 import {createHash, randomUUID} from "node:crypto";
 import {createReadStream} from "node:fs";
-import {copyFile, mkdir, readFile, readdir, rm, stat, writeFile} from "node:fs/promises";
+import {chmod, copyFile, mkdir, readFile, readdir, rm, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {spawn} from "node:child_process";
 import semver from "semver";
 import {z} from "zod";
 import {writeJsonAtomic} from "../shared/atomic.ts";
-import {HOST_UPDATE_URL, HOST_VERSION, getPaths} from "../shared/constants.ts";
+import {HOST_UPDATE_URL, HOST_VERSION, ZDP_EXECUTABLE, getPaths} from "../shared/constants.ts";
 import type {JsonLogger} from "../shared/logger.ts";
 import type {HostUpdateStatus} from "../shared/schemas.ts";
 import {assertRemoteUrl, extractArchive, fetchRemote, readBoundedResponse} from "./extension-updater.ts";
@@ -82,7 +82,7 @@ export class HostUpdater {
   async initialize(): Promise<void> {
     await mkdir(this.#paths.hostUpdateStaging, {recursive: true});
     await cleanupOldHelpers();
-    const installable = await this.#installedManifest().then(() => true).catch(() => false);
+    const installable = process.platform === "win32" && await this.#installedManifest().then(() => true).catch(() => false);
     this.#status = {...this.#status, installable};
     await this.#recoverStatus();
   }
@@ -146,8 +146,9 @@ export class HostUpdater {
         stagingRoot, zcodeRoot: this.#options.zcodeRoot, releaseUrl: release.releaseUrl,
       };
       await writeJsonAtomic(this.#paths.hostUpdateState, transaction);
-      const helper = path.join(tmpdir(), `zdp-update-${randomUUID()}.exe`);
-      await copyFile(path.join(this.#paths.bin, "zdp.exe"), helper);
+      const helper = path.join(tmpdir(), `zdp-update-${randomUUID()}${process.platform === "win32" ? ".exe" : ""}`);
+      await copyFile(path.join(this.#paths.bin, ZDP_EXECUTABLE), helper);
+      if (process.platform !== "win32") await chmod(helper, 0o755);
       const helperArgs = ["apply-update", "--parent", String(parentPid), "--root", this.#options.root, "--zcode", this.#options.zcodeRoot];
       if (this.#options.launchHelper) this.#options.launchHelper(helper, helperArgs);
       else {
@@ -186,7 +187,7 @@ export async function verifyManagedFiles(root: string, manifest: ReleaseManifest
   const seen = new Set<string>();
   for (const file of manifest.files) {
     const relative = safeManagedPath(file.path);
-    const key = relative.toLowerCase();
+    const key = process.platform === "win32" ? relative.toLowerCase() : relative;
     if (seen.has(key)) throw new Error(`Duplicate managed file: ${relative}`);
     seen.add(key);
     const target = path.join(root, ...relative.split("/"));
@@ -221,7 +222,7 @@ function hash(value: Buffer): string { return createHash("sha256").update(value)
 async function exists(value: string): Promise<boolean> { return stat(value).then(() => true).catch(() => false); }
 async function cleanupOldHelpers(): Promise<void> {
   const entries = await readdir(tmpdir(), {withFileTypes: true}).catch(() => []);
-  await Promise.all(entries.filter((entry) => entry.isFile() && /^zdp-update-[0-9a-f-]+\.exe$/i.test(entry.name))
+  await Promise.all(entries.filter((entry) => entry.isFile() && /^zdp-update-[0-9a-f-]+(?:\.exe)?$/i.test(entry.name))
     .map((entry) => rm(path.join(tmpdir(), entry.name), {force: true}).catch(() => undefined)));
 }
 function errorText(value: unknown): string { return value instanceof Error ? value.message : String(value); }

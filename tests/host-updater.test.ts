@@ -35,6 +35,13 @@ describe("host updater", () => {
     await writeFile(path.join(root, "bin", "zdp.exe"), "old helper");
     await writeFile(path.join(root, "data", "keep.txt"), "preserved");
     await writeManifest(root, HOST_VERSION, [{path: "bin/zdp.exe", bytes: Buffer.from("old helper")}]);
+    if (process.platform !== "win32") {
+      const updater = createUpdater(root, "http://localhost/unused");
+      await updater.initialize();
+      expect(updater.status().installable).toBe(false);
+      updater.dispose();
+      return;
+    }
 
     const archiveStage = path.join(root, "archive-stage", "zcode-extensions");
     const incoming = Buffer.from("new helper");
@@ -105,7 +112,9 @@ async function writeManifest(root: string, version: string, files: Array<{path: 
 async function tempRoot(prefix: string): Promise<string> { const root = await mkdtemp(path.join(os.tmpdir(), prefix)); roots.push(root); return root; }
 function hash(value: Buffer): string { return createHash("sha256").update(value).digest("hex"); }
 async function compress(source: string, destination: string): Promise<void> {
-  const command = `Compress-Archive -LiteralPath '${source.replaceAll("'", "''")}' -DestinationPath '${destination.replaceAll("'", "''")}' -Force`;
-  const child = Bun.spawn(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {stdout: "ignore", stderr: "inherit"});
+  const command = process.platform === "win32"
+    ? ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `Compress-Archive -LiteralPath '${source.replaceAll("'", "''")}' -DestinationPath '${destination.replaceAll("'", "''")}' -Force`]
+    : ["bsdtar", "-a", "-cf", destination, path.basename(source)];
+  const child = Bun.spawn(command, {cwd: process.platform === "win32" ? undefined : path.dirname(source), stdout: "ignore", stderr: "inherit"});
   if (await child.exited !== 0) throw new Error("Could not create host updater test archive");
 }
