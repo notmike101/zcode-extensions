@@ -3,10 +3,11 @@ import {afterEach, describe, expect, test} from "bun:test";
 import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {ExtensionUpdater, moveOrCopyForUpdate, renameWithRetry, validateArchiveEntryPath} from "../src/host/extension-updater.ts";
+import {ExtensionUpdater, extractArchive, moveOrCopyForUpdate, renameWithRetry, validateArchiveEntryPath} from "../src/host/extension-updater.ts";
 import {readExtensionManifest} from "../src/host/extension-bundle.ts";
 import {JsonLogger} from "../src/shared/logger.ts";
 import type {PluginManifest} from "../src/shared/schemas.ts";
+import {writeZipFromDirectory} from "./fixtures/archive.ts";
 
 const roots: string[] = [];
 const servers: Bun.Server<unknown>[] = [];
@@ -121,6 +122,21 @@ describe("extension updater", () => {
     const trash = await readdir(path.join(root, "data", ".trash"));
     expect(trash.some((name) => name.startsWith("scheduler-"))).toBe(true);
     restarted.dispose();
+  });
+
+  test("extracts the in-process test archives with the production reader", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "zdp-updater-fixture-"));
+    roots.push(root);
+    const stage = path.join(root, "archive-stage", "scheduler");
+    await writeBundle(stage, "0.1.3", "new");
+    const archive = path.join(root, "scheduler.zip");
+    await compress(stage, archive);
+
+    const extracted = path.join(root, "extracted");
+    await mkdir(extracted, {recursive: true});
+    await extractArchive(archive, extracted);
+    expect((await readExtensionManifest(path.join(extracted, "scheduler"))).version).toBe("0.1.3");
+    expect(await readFile(path.join(extracted, "scheduler", "dist", "main.cjs"), "utf8")).toContain("new");
   });
 
   test("rejects archive paths that can escape or alias the extraction root", () => {
@@ -271,18 +287,6 @@ function manifestFor(version: string): PluginManifest {
 }
 
 async function compress(source: string, destination: string): Promise<void> {
-  const command = process.platform === "win32"
-    ? ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `Compress-Archive -LiteralPath ${quote(source)} -DestinationPath ${quote(destination)} -CompressionLevel Optimal -Force`]
-    : ["bsdtar", "-a", "-cf", destination, path.basename(source)];
-  const child = Bun.spawn(command, {
-    cwd: process.platform === "win32" ? undefined : path.dirname(source),
-    stdout: "ignore",
-    stderr: "inherit",
-  });
-  if (await child.exited !== 0) throw new Error("Could not create updater test archive");
+  await writeZipFromDirectory(source, destination);
   expect((await stat(destination)).isFile()).toBe(true);
-}
-
-function quote(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
 }

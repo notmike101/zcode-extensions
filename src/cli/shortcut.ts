@@ -1,5 +1,5 @@
 import {spawn} from "node:child_process";
-import {mkdir, readFile, writeFile} from "node:fs/promises";
+import {mkdir, readFile, rm, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -10,6 +10,7 @@ export type ShortcutState = {
   originalWorkingDirectory: string;
   originalIconLocation: string;
   originalContents?: string;
+  created?: boolean;
 };
 
 export function defaultShortcutPath(): string {
@@ -78,6 +79,54 @@ $sc.Save()
     ZDP_ICON: iconPath,
   });
   if (result.code !== 0) throw new Error(`Failed to create ZDP shortcut: ${result.stderr || result.stdout}`);
+}
+
+export async function captureShortcut(shortcutPath: string): Promise<ShortcutState> {
+  const existing = await readShortcut(shortcutPath);
+  return existing ? {...existing, created: false} : {
+    path: shortcutPath,
+    originalTarget: "",
+    originalArguments: "",
+    originalWorkingDirectory: "",
+    originalIconLocation: "",
+    created: true,
+  };
+}
+
+export async function removeLauncherShortcut(state: ShortcutState | undefined, launcher: string, shortcutPath = defaultShortcutPath()): Promise<void> {
+  if (state && !wasCreatedByLauncher(state, launcher)) {
+    await restoreShortcut(state);
+    return;
+  }
+  const pathValue = state?.path ?? shortcutPath;
+  if (!state && !await isLauncherEntry(pathValue, launcher)) return;
+  await removeLauncherEntry(pathValue);
+}
+
+function wasCreatedByLauncher(state: ShortcutState, launcher: string): boolean {
+  if (state.created !== undefined) return state.created;
+  if (state.originalContents !== undefined) return false;
+  return path.resolve(state.originalTarget) === path.resolve(launcher);
+}
+
+async function isLauncherEntry(shortcutPath: string, launcher: string): Promise<boolean> {
+  const existing = await readShortcut(shortcutPath).catch(() => undefined);
+  return Boolean(existing && path.resolve(existing.originalTarget) === path.resolve(launcher));
+}
+
+async function removeLauncherEntry(shortcutPath: string): Promise<void> {
+  if (process.platform !== "win32") {
+    await rm(shortcutPath, {force: true});
+    return;
+  }
+  const script = `
+$ErrorActionPreference='Stop'
+$path=$env:ZDP_SHORTCUT_PATH
+if(-not (Test-Path -LiteralPath $path)){ exit 0 }
+Remove-Item -LiteralPath $path -Force
+`;
+  const result = await powershell(script, {ZDP_SHORTCUT_PATH: shortcutPath});
+  if (result.code !== 0) throw new Error(`Failed to remove ZDP shortcut: ${result.stderr || result.stdout}`);
 }
 
 export async function restoreShortcut(state: ShortcutState): Promise<void> {

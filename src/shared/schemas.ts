@@ -92,11 +92,12 @@ export const installStateSchema = z.object({
   loaderVersion: z.string().min(1),
   shortcut: z.object({
     path: z.string().min(1),
-    originalTarget: z.string().min(1),
+    originalTarget: z.string(),
     originalArguments: z.string(),
     originalWorkingDirectory: z.string(),
     originalIconLocation: z.string(),
     originalContents: z.string().optional(),
+    created: z.boolean().optional(),
   }).optional(),
   fuses: z.record(z.string(), z.string()),
 }).strict();

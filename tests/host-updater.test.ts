@@ -7,6 +7,7 @@ import semver from "semver";
 import {HostUpdater, type ReleaseManifest} from "../src/host/host-updater.ts";
 import {JsonLogger} from "../src/shared/logger.ts";
 import {HOST_VERSION} from "../src/shared/constants.ts";
+import {writeZipFromDirectory} from "./fixtures/archive.ts";
 
 const roots: string[] = [];
 const servers: Bun.Server<unknown>[] = [];
@@ -112,9 +113,5 @@ async function writeManifest(root: string, version: string, files: Array<{path: 
 async function tempRoot(prefix: string): Promise<string> { const root = await mkdtemp(path.join(os.tmpdir(), prefix)); roots.push(root); return root; }
 function hash(value: Buffer): string { return createHash("sha256").update(value).digest("hex"); }
 async function compress(source: string, destination: string): Promise<void> {
-  const command = process.platform === "win32"
-    ? ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `Compress-Archive -LiteralPath '${source.replaceAll("'", "''")}' -DestinationPath '${destination.replaceAll("'", "''")}' -Force`]
-    : ["bsdtar", "-a", "-cf", destination, path.basename(source)];
-  const child = Bun.spawn(command, {cwd: process.platform === "win32" ? undefined : path.dirname(source), stdout: "ignore", stderr: "inherit"});
-  if (await child.exited !== 0) throw new Error("Could not create host updater test archive");
+  await writeZipFromDirectory(source, destination);
 }

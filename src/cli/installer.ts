@@ -8,7 +8,7 @@ import {FuseState, FuseV1Options, getCurrentFuseWire} from "@electron/fuses";
 import {DEFAULT_ZCODE_ROOT, HOST_VERSION, ZDP_LAUNCHER_EXECUTABLE, getPaths, getZCodeLayout, resolveZdpRoot} from "../shared/constants.ts";
 import {writeJsonAtomic} from "../shared/atomic.ts";
 import {installStateSchema, type InstallState} from "../shared/schemas.ts";
-import {defaultShortcutPath, readShortcut, restoreShortcut, writeLauncherShortcut} from "./shortcut.ts";
+import {captureShortcut, defaultShortcutPath, readShortcut, removeLauncherShortcut, writeLauncherShortcut} from "./shortcut.ts";
 
 type VendorPackage = {name?: string; productName?: string; version: string; type?: string; main?: string};
 
@@ -56,8 +56,9 @@ export async function doctor(zcodeRoot = DEFAULT_ZCODE_ROOT, zdpRoot = resolveZd
   const loaderPresent = await isManagedLoader(path.join(resources, "app"));
   const runtimePresent = await exists(paths.runtimeBootstrap) && await exists(paths.runtimeCurrent);
   const installState = await readInstallState(paths.installState);
+  const launcher = path.join(paths.bin, ZDP_LAUNCHER_EXECUTABLE);
   const shortcut = await readShortcut().catch(() => undefined);
-  const shortcutManaged = Boolean(shortcut && path.resolve(shortcut.originalTarget) === path.resolve(path.join(paths.bin, ZDP_LAUNCHER_EXECUTABLE)));
+  const shortcutManaged = Boolean(shortcut && path.resolve(shortcut.originalTarget) === path.resolve(launcher));
   return {
     ok: errors.length === 0 && runtimePresent,
     installed: loaderPresent && Boolean(await exists(originalAsar)),
@@ -112,9 +113,11 @@ export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {
   const existingState = await readInstallState(paths.installState);
   const manageShortcut = options.manageShortcut ?? true;
   const shortcutPath = existingState?.shortcut?.path ?? defaultShortcutPath();
-  const originalShortcut = manageShortcut ? existingState?.shortcut ?? await readShortcut(shortcutPath) : undefined;
   const launcher = path.join(paths.bin, ZDP_LAUNCHER_EXECUTABLE);
-  if (manageShortcut && await exists(launcher)) await writeLauncherShortcut(shortcutPath, launcher, root, layout.electronExecutable);
+  const shortcut = manageShortcut && await exists(launcher)
+    ? existingState?.shortcut ?? await captureShortcut(shortcutPath)
+    : undefined;
+  if (shortcut) await writeLauncherShortcut(shortcutPath, launcher, root, layout.electronExecutable);
   const wire = await getCurrentFuseWire(layout.electronExecutable);
   const now = new Date().toISOString();
   const state: InstallState = installStateSchema.parse({
@@ -126,7 +129,7 @@ export async function installOrRepair(zcodeRoot = DEFAULT_ZCODE_ROOT, options: {
     installedAt: existingState?.installedAt ?? now,
     ...(existingState ? {repairedAt: now} : {}),
     loaderVersion: options.loaderVersion ?? HOST_VERSION,
-    ...(originalShortcut ? {shortcut: originalShortcut} : {}),
+    ...(shortcut ? {shortcut} : {}),
     fuses: fuseReport(wire as unknown as Record<number, FuseState>),
   });
   await writeJsonAtomic(paths.installState, state);
@@ -159,7 +162,10 @@ export async function uninstall(zcodeRoot = DEFAULT_ZCODE_ROOT, purgeData = fals
     await rm(originalUnpacked, {recursive: true, force: true});
   }
   const state = await readInstallState(paths.installState);
-  if ((options.manageShortcut ?? true) && state?.shortcut) await restoreShortcut(state.shortcut);
+  if (options.manageShortcut ?? true) {
+    const launcher = path.join(paths.bin, ZDP_LAUNCHER_EXECUTABLE);
+    await removeLauncherShortcut(state?.shortcut, launcher, state?.shortcut?.path ?? defaultShortcutPath());
+  }
   await rm(paths.installState, {force: true});
   await rm(paths.bootState, {force: true});
   if (purgeData) await rm(paths.data, {recursive: true, force: true});
