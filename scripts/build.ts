@@ -1,6 +1,6 @@
-import {cp, mkdir, readFile, rm, writeFile} from "node:fs/promises";
+import {chmod, cp, mkdir, readFile, rm, writeFile} from "node:fs/promises";
 import path from "node:path";
-import {HOST_VERSION} from "../src/shared/constants.ts";
+import {HOST_VERSION, ZDP_EXECUTABLE, ZDP_LAUNCHER_EXECUTABLE} from "../src/shared/constants.ts";
 
 const root = path.resolve(import.meta.dir, "..");
 const runtime = path.join(root, "runtime");
@@ -47,10 +47,15 @@ await cp(path.join(root, "src", "loader", "runtime-bootstrap.mjs"), path.join(ru
 await writeFile(path.join(runtime, "current.json"), `${JSON.stringify({version: HOST_VERSION}, null, 2)}\n`, "utf8");
 
 await runBunBuild([
-  "build", path.join(root, "src", "cli", "index.ts"), "--compile", "--minify", "--sourcemap", "--outfile", path.join(bin, "zdp.exe"),
+  "build", path.join(root, "src", "cli", "index.ts"), "--compile", "--minify", "--sourcemap", "--outfile", path.join(bin, ZDP_EXECUTABLE),
 ]);
-await runBunBuild([
-  "build", path.join(root, "src", "cli", "launcher.ts"), "--compile", "--minify", "--windows-hide-console", "--outfile", path.join(bin, "zdp-launcher.exe"),
+const launcherArgs = ["build", path.join(root, "src", "cli", "launcher.ts"), "--compile", "--minify"];
+if (process.platform === "win32") launcherArgs.push("--windows-hide-console");
+launcherArgs.push("--outfile", path.join(bin, ZDP_LAUNCHER_EXECUTABLE));
+await runBunBuild(launcherArgs);
+if (process.platform !== "win32") await Promise.all([
+  chmod(path.join(bin, ZDP_EXECUTABLE), 0o755),
+  chmod(path.join(bin, ZDP_LAUNCHER_EXECUTABLE), 0o755),
 ]);
 
 console.log(`Built ${HOST_VERSION} to ${versionDir}`);

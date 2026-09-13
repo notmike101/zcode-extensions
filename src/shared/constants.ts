@@ -1,22 +1,34 @@
 import path from "node:path";
+import os from "node:os";
 
 export const HOST_NAME = "ZCode Desktop Extensions";
 export const HOST_VERSION = "0.3.9";
 export const HOST_UPDATE_URL = "https://github.com/notmike101/zcode-extensions/releases/latest/download/host-update.json";
 export const API_VERSION = 1;
 export const INSTALL_STATE_VERSION = 1;
-export const DEFAULT_ZCODE_ROOT = path.join(
-  process.env.LOCALAPPDATA ?? "C:\\Users\\me\\AppData\\Local",
-  "Programs",
-  "ZCode",
-);
+export const ZDP_EXECUTABLE = process.platform === "win32" ? "zdp.exe" : "zdp";
+export const ZDP_LAUNCHER_EXECUTABLE = process.platform === "win32" ? "zdp-launcher.exe" : "zdp-launcher";
+export const DEFAULT_ZCODE_ROOT = process.platform === "win32"
+  ? path.join(process.env.LOCALAPPDATA ?? "C:\\Users\\me\\AppData\\Local", "Programs", "ZCode")
+  : path.join(os.homedir(), ".local", "opt", "ZCode");
+
+export function getZCodeLayout(root: string) {
+  const electronExecutable = path.join(root, process.platform === "win32" ? "ZCode.exe" : "zcode");
+  return {
+    root,
+    resources: path.join(root, "resources"),
+    electronExecutable,
+    launchExecutable: electronExecutable,
+    launchArgs: process.platform === "win32" ? [] : ["--no-sandbox"],
+  };
+}
 
 export const PLUGIN_ID_PATTERN = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
 
 export function resolveZdpRoot(): string {
   if (process.env.ZDP_ROOT) return path.resolve(process.env.ZDP_ROOT);
   const executable = path.basename(process.execPath).toLowerCase();
-  if (executable === "zdp.exe" || executable === "zdp-launcher.exe") {
+  if (["zdp", "zdp.exe", "zdp-launcher", "zdp-launcher.exe"].includes(executable)) {
     return path.dirname(path.dirname(process.execPath));
   }
   return process.cwd();

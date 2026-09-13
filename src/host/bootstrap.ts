@@ -3,7 +3,7 @@ import {readFile} from "node:fs/promises";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 import {app, dialog, ipcMain, powerMonitor, protocol, session, shell, type WebContents} from "electron";
-import {HOST_NAME, HOST_VERSION, getPaths, resolveZdpRoot} from "../shared/constants.ts";
+import {HOST_NAME, HOST_VERSION, ZDP_EXECUTABLE, getPaths, resolveZdpRoot} from "../shared/constants.ts";
 import {writeJsonAtomic} from "../shared/atomic.ts";
 import {JsonLogger} from "../shared/logger.ts";
 import type {HostState} from "../shared/schemas.ts";
@@ -263,7 +263,7 @@ async function chooseDirectory(title: string): Promise<string | null> {
 
 function startGuardian(): void {
   if (process.env.ZDP_DISABLE_GUARD === "1") return;
-  const executable = path.join(paths.bin, "zdp.exe");
+  const executable = path.join(paths.bin, ZDP_EXECUTABLE);
   const child = spawn(executable, ["guard", "--parent", String(process.pid), "--zcode", zcodeRoot], {
     detached: true,
     stdio: "ignore",
